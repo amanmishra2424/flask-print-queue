@@ -1,0 +1,11 @@
+way to create module is
+ 
+npx ng g m core (g= genrate m= module ng = cli command for angular )
+npx ng g m shared 
+npx ng g m profiles --routing
+npx ng g m auth --routing(rounting= lazy loading)
+
+way to create module is 
+npx ng g c core/components/layout/header (c for component)
+npx ng g c core/components/layout/footer
+npx ng g c core/components/layout/landing
