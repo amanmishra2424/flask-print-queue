@@ -2,38 +2,38 @@ from flask import Flask, request, send_file, jsonify, render_template_string
 from flask_cors import CORS
 from PyPDF2 import PdfMerger
 import os
-import json
-from datetime import datetime
 import hashlib
+import requests
+from datetime import datetime
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
+from pymongo import MongoClient
+import tempfile
+from bson import ObjectId
 
 app = Flask(__name__)
 CORS(app)
 
-# Create necessary folders
-UPLOAD_FOLDER = 'uploads'
-QUEUE_FOLDER = 'print_queue'
-for folder in [UPLOAD_FOLDER, QUEUE_FOLDER]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+# Cloudinary Configuration
+cloudinary.config(
+    cloud_name='disht9nbk',
+    api_key='587297388865477',
+    api_secret='44JUq6ZcveKznDxyXT7OT4GyoTs'
+)
 
-# Files to store print queues
-QUEUE_FILE_BATCH1 = 'print_queue/queue_batch1.json'
-QUEUE_FILE_BATCH2 = 'print_queue/queue_batch2.json'
+# MongoDB Configuration
+MONGO_URI = "mongodb://localhost:27017"
+client = MongoClient(MONGO_URI)
+db = client['print_queue_db']
+batch1_collection = db['batch1_queue']
+batch2_collection = db['batch2_queue']
+
+# Create temporary directory for file operations
+TEMP_DIR = tempfile.mkdtemp()
 
 # Admin password (SHA-256 hashed)
 ADMIN_PASSWORD = hashlib.sha256("jai ho".encode()).hexdigest()
-
-def load_queue(batch):
-    queue_file = QUEUE_FILE_BATCH1 if batch == 1 else QUEUE_FILE_BATCH2
-    if os.path.exists(queue_file):
-        with open(queue_file, 'r') as f:
-            return json.load(f)
-    return []
-
-def save_queue(queue, batch):
-    queue_file = QUEUE_FILE_BATCH1 if batch == 1 else QUEUE_FILE_BATCH2
-    with open(queue_file, 'w') as f:
-        json.dump(queue, f, indent=2)
 
 @app.route('/')
 def home():
@@ -87,18 +87,18 @@ def home():
             button:hover {
                 opacity: 0.9;
             }
-            button:disabled {
-                background-color: #cccccc;
-            }
             .status {
                 margin-top: 15px;
-                text-align: center;
-                color: #666;
+                padding: 10px;
+                border-radius: 4px;
+            }
+            .success {
+                background-color: #dff0d8;
+                color: #3c763d;
             }
             .error {
-                color: red;
-                margin-top: 10px;
-                text-align: center;
+                background-color: #f2dede;
+                color: #a94442;
             }
             .queue-list {
                 margin-top: 20px;
@@ -107,28 +107,18 @@ def home():
                 padding: 10px;
                 border-bottom: 1px solid #eee;
             }
-            .batch-selection {
-                display: flex;
-                justify-content: space-between;
-                margin-bottom: 15px;
-            }
-            .admin-section {
-                margin-top: 30px;
-                padding-top: 20px;
-                border-top: 2px solid #eee;
-            }
-            .admin-password {
-                margin-top: 10px;
-            }
         </style>
     </head>
     <body>
         <div class="container">
             <h1 style="text-align: center;">Print Service Queue</h1>
             
-            <div class="batch-selection">
-                <button onclick="selectBatch(1)">Batch 1</button>
-                <button onclick="selectBatch(2)">Batch 2</button>
+            <div class="form-group">
+                <label for="batchSelect">Select Batch:</label>
+                <select id="batchSelect" style="width: 100%; padding: 8px; margin-bottom: 15px;">
+                    <option value="1">Batch 1</option>
+                    <option value="2">Batch 2</option>
+                </select>
             </div>
 
             <div class="form-group">
@@ -146,134 +136,114 @@ def home():
                 <input type="number" id="copies" min="1" max="100" value="1" required>
             </div>
             
-            <input type="hidden" id="selectedBatch" value="1">
-            
-            <button id="submitButton" onclick="submitPrint()">Submit Print Request</button>
+            <button onclick="submitPrint()">Submit Print Request</button>
             
             <div id="status" class="status"></div>
-            <div id="error" class="error"></div>
         </div>
 
-        <!-- Admin Section -->
-        <div class="container admin-section">
+        <div class="container">
             <h2 style="text-align: center;">Admin Controls</h2>
-            <div class="admin-password">
+            <div class="form-group">
                 <label for="adminPassword">Admin Password:</label>
                 <input type="password" id="adminPassword">
             </div>
-            <button class="admin" onclick="viewQueue()">View Current Queue</button>
-            <button class="admin" onclick="mergePrintQueue()">Merge All PDFs for Printing</button>
-            
+            <button class="admin" onclick="viewQueue()">View Queue</button>
+            <button class="admin" onclick="mergePrintQueue()">Merge and Download Queue</button>
             <div id="queueList" class="queue-list"></div>
         </div>
 
         <script>
-            let currentBatch = 1;
-
-            function selectBatch(batch) {
-                currentBatch = batch;
-                document.getElementById('selectedBatch').value = batch;
-                document.querySelector('.batch-selection').querySelectorAll('button').forEach(btn => {
-                    btn.style.backgroundColor = batch === 1 ? '#4CAF50' : '#2196F3';
-                });
-            }
-
             async function submitPrint() {
-                const nameInput = document.getElementById('studentName');
-                const fileInput = document.getElementById('pdfFile');
+                const name = document.getElementById('studentName').value;
+                const file = document.getElementById('pdfFile').files[0];
                 const copies = document.getElementById('copies').value;
-                const statusDiv = document.getElementById('status');
-                const errorDiv = document.getElementById('error');
-                const submitButton = document.getElementById('submitButton');
-                const batch = document.getElementById('selectedBatch').value;
+                const batch = document.getElementById('batchSelect').value;
+                const status = document.getElementById('status');
 
-                statusDiv.textContent = '';
-                errorDiv.textContent = '';
-
-                if (!nameInput.value.trim()) {
-                    errorDiv.textContent = 'Please enter your name';
-                    return;
-                }
-
-                if (!fileInput.files[0]) {
-                    errorDiv.textContent = 'Please select a PDF file';
-                    return;
-                }
-
-                if (!fileInput.files[0].name.toLowerCase().endsWith('.pdf')) {
-                    errorDiv.textContent = 'Please select a valid PDF file';
+                if (!name || !file || !copies) {
+                    status.textContent = 'Please fill all fields';
+                    status.className = 'status error';
                     return;
                 }
 
                 const formData = new FormData();
-                formData.append('pdf', fileInput.files[0]);
+                formData.append('name', name);
+                formData.append('pdf', file);
                 formData.append('copies', copies);
-                formData.append('name', nameInput.value);
                 formData.append('batch', batch);
 
                 try {
-                    submitButton.disabled = true;
-                    statusDiv.textContent = 'Submitting request...';
-
                     const response = await fetch('/submit', {
                         method: 'POST',
                         body: formData
                     });
 
                     if (response.ok) {
-                        statusDiv.textContent = `Print request submitted for Batch ${batch} successfully!`;
-                        nameInput.value = '';
-                        fileInput.value = '';
-                        copies.value = '1';
+                        status.textContent = 'Print request submitted successfully!';
+                        status.className = 'status success';
+                        document.getElementById('studentName').value = '';
+                        document.getElementById('pdfFile').value = '';
+                        document.getElementById('copies').value = '1';
                     } else {
-                        errorDiv.textContent = 'Error submitting request';
+                        const error = await response.text();
+                        status.textContent = `Error: ${error}`;
+                        status.className = 'status error';
                     }
                 } catch (error) {
-                    errorDiv.textContent = 'Error uploading file';
-                    console.error('Error:', error);
-                } finally {
-                    submitButton.disabled = false;
+                    status.textContent = 'Error submitting request';
+                    status.className = 'status error';
                 }
             }
 
             async function viewQueue() {
+                const password = document.getElementById('adminPassword').value;
+                const batch = document.getElementById('batchSelect').value;
                 const queueList = document.getElementById('queueList');
-                const adminPassword = document.getElementById('adminPassword').value;
-                const batch = currentBatch;
 
                 try {
-                    const response = await fetch(`/queue?batch=${batch}&password=${encodeURIComponent(adminPassword)}`);
+                    const response = await fetch(`/queue?batch=${batch}&password=${encodeURIComponent(password)}`);
                     
                     if (response.status === 403) {
-                        queueList.innerHTML = 'Incorrect admin password';
+                        queueList.innerHTML = '<div class="error">Invalid admin password</div>';
                         return;
                     }
 
                     const queue = await response.json();
                     
-                    queueList.innerHTML = `<h3>Batch ${batch} Queue:</h3>` + 
-                        queue.map(item => `
-                            <div class="queue-item">
-                                <strong>${item.name}</strong> - ${item.original_filename} (${item.copies} copies)
-                                <br>Submitted: ${item.timestamp}
-                            </div>
-                        `).join('');
+                    if (queue.length === 0) {
+                        queueList.innerHTML = '<div>Queue is empty</div>';
+                        return;
+                    }
+
+                    queueList.innerHTML = queue.map(item => `
+                        <div class="queue-item">
+                            <strong>${item.name}</strong><br>
+                            File: ${item.original_filename}<br>
+                            Copies: ${item.copies}<br>
+                            Submitted: ${item.timestamp}
+                        </div>
+                    `).join('');
                 } catch (error) {
-                    queueList.innerHTML = 'Error loading queue';
+                    queueList.innerHTML = '<div class="error">Error loading queue</div>';
                 }
             }
 
             async function mergePrintQueue() {
-                const adminPassword = document.getElementById('adminPassword').value;
-                const batch = currentBatch;
+                const password = document.getElementById('adminPassword').value;
+                const batch = document.getElementById('batchSelect').value;
 
                 try {
-                    const response = await fetch(`/merge-all?batch=${batch}&password=${encodeURIComponent(adminPassword)}`, {
+                    const response = await fetch(`/merge?batch=${batch}&password=${encodeURIComponent(password)}`, {
                         method: 'POST'
                     });
 
                     if (response.status === 403) {
-                        alert('Incorrect admin password');
+                        alert('Invalid admin password');
+                        return;
+                    }
+
+                    if (response.status === 404) {
+                        alert('Queue is empty');
                         return;
                     }
 
@@ -287,6 +257,7 @@ def home():
                         a.click();
                         window.URL.revokeObjectURL(url);
                         a.remove();
+                        viewQueue(); // Refresh the queue display
                     }
                 } catch (error) {
                     alert('Error merging PDFs');
@@ -302,106 +273,132 @@ def submit_print():
     try:
         if 'pdf' not in request.files:
             return 'No file uploaded', 400
-        
+
         file = request.files['pdf']
+        name = request.form.get('name')
         copies = int(request.form.get('copies', 1))
-        name = request.form.get('name', 'Unknown')
         batch = int(request.form.get('batch', 1))
-        
+
+        if not name:
+            return 'Name is required', 400
+
         if file.filename == '':
             return 'No file selected', 400
-            
+
         if not file.filename.lower().endswith('.pdf'):
-            return 'Invalid file type - Please upload a PDF file', 400
-        
-        # Save the file
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
-        file_path = os.path.join(QUEUE_FOLDER, filename)
-        file.save(file_path)
-        
-        # Add to queue
-        queue = load_queue(batch)
-        queue.append({
+            return 'Only PDF files are allowed', 400
+
+        # Save file temporarily
+        temp_path = os.path.join(TEMP_DIR, file.filename)
+        file.save(temp_path)
+
+        # Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            temp_path,
+            resource_type="raw",
+            folder="print_queue",
+            public_id=f"print_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+        )
+
+        # Clean up temp file
+        os.remove(temp_path)
+
+        # Store in MongoDB
+        document = {
             'name': name,
-            'filename': filename,
             'original_filename': file.filename,
+            'cloudinary_url': upload_result['secure_url'],
+            'public_id': upload_result['public_id'],
             'copies': copies,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
-        save_queue(queue, batch)
-        
+        }
+
+        collection = batch1_collection if batch == 1 else batch2_collection
+        collection.insert_one(document)
+
         return 'Success', 200
-        
+
     except Exception as e:
         return str(e), 500
 
 @app.route('/queue')
-def get_queue():
+def view_queue():
     try:
-        # Check admin password
-        admin_password = request.args.get('password', '')
-        if hashlib.sha256(admin_password.encode()).hexdigest() != ADMIN_PASSWORD:
-            return 'Unauthorized', 403
-        
+        password = request.args.get('password', '')
         batch = int(request.args.get('batch', 1))
-        return jsonify(load_queue(batch))
+
+        if hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
+            return 'Unauthorized', 403
+
+        collection = batch1_collection if batch == 1 else batch2_collection
+        queue = list(collection.find({}, {'_id': 0}))
+        return jsonify(queue)
+
     except Exception as e:
         return str(e), 500
 
-@app.route('/merge-all', methods=['POST'])
-def merge_all():
+@app.route('/merge', methods=['POST'])
+def merge_queue():
     try:
-        # Check admin password
-        admin_password = request.args.get('password', '')
-        if hashlib.sha256(admin_password.encode()).hexdigest() != ADMIN_PASSWORD:
-            return 'Unauthorized', 403
-        
+        password = request.args.get('password', '')
         batch = int(request.args.get('batch', 1))
-        queue = load_queue(batch)
-        
+
+        if hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
+            return 'Unauthorized', 403
+
+        collection = batch1_collection if batch == 1 else batch2_collection
+        queue = list(collection.find())
+
         if not queue:
-            return 'Queue is empty', 400
-            
+            return 'Queue is empty', 404
+
         merger = PdfMerger()
-        
-        # Merge all PDFs in queue with their specified copies
+        temp_files = []
+
+        # Download and merge PDFs
         for item in queue:
-            file_path = os.path.join(QUEUE_FOLDER, item['filename'])
-            if os.path.exists(file_path):
-                for _ in range(item['copies']):
-                    merger.append(file_path)
-        
-        # Save merged file
-        output_path = os.path.join(UPLOAD_FOLDER, f'merged_queue_batch{batch}.pdf')
+            response = requests.get(item['cloudinary_url'])
+            temp_path = os.path.join(TEMP_DIR, f"temp_{item['original_filename']}")
+            temp_files.append(temp_path)
+            
+            with open(temp_path, 'wb') as f:
+                f.write(response.content)
+            
+            for _ in range(item['copies']):
+                merger.append(temp_path)
+
+        # Save merged PDF
+        output_path = os.path.join(TEMP_DIR, f'merged_batch_{batch}.pdf')
         merger.write(output_path)
         merger.close()
-        
-        # Clear the queue after merging
-        save_queue([], batch)
-        
-        # Remove individual PDF files from queue folder
+
+        # Clean up Cloudinary files and MongoDB records
         for item in queue:
-            file_path = os.path.join(QUEUE_FOLDER, item['filename'])
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        
-        # Send the merged file
+            cloudinary.uploader.destroy(item['public_id'], resource_type="raw")
+        collection.delete_many({})
+
+        # Clean up temp files
+        for temp_file in temp_files:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+
+        # Send merged PDF
         response = send_file(
             output_path,
             as_attachment=True,
             download_name=f'print_queue_batch{batch}_{datetime.now().strftime("%Y%m%d")}.pdf'
         )
-        
-        # Clean up
+
+        # Clean up merged PDF after sending
         @response.call_on_close
         def cleanup():
             if os.path.exists(output_path):
                 os.remove(output_path)
-                
+
         return response
-        
+
     except Exception as e:
         return str(e), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
