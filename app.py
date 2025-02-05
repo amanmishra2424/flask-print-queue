@@ -19,11 +19,10 @@ CORS(app)
 cloudinary.config(
     cloud_name='disht9nbk',
     api_key='587297388865477',
-    api_secret='44JUq6ZcveKznDxyXT7OT4GyoTs'
-)
+    api_secret='44JUq6ZcveKznDxyXT7OT4GyoTs')
 
 # MongoDB Configuration
-MONGO_URI = "mongodb://localhost:27017"
+MONGO_URI = os.environ.get('MONGODB_URI', 'mongodb+srv://print_queue_db:jai_ho@aman.dlsk6.mongodb.net/')
 client = MongoClient(MONGO_URI)
 db = client['print_queue_db']
 batch1_collection = db['batch1_queue']
@@ -31,9 +30,9 @@ batch2_collection = db['batch2_queue']
 
 # Create temporary directory for file operations
 TEMP_DIR = tempfile.mkdtemp()
-
+TEMP_DIR = '/tmp'  # Use /tmp directory on Render
 # Admin password (SHA-256 hashed)
-ADMIN_PASSWORD = hashlib.sha256("jai ho".encode()).hexdigest()
+ADMIN_PASSWORD = hashlib.sha256(os.environ.get('ADMIN_PASSWORD', 'jai ho').encode()).hexdigest()
 
 @app.route('/')
 def home():
@@ -399,6 +398,6 @@ def merge_queue():
 
     except Exception as e:
         return str(e), 500
-
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
