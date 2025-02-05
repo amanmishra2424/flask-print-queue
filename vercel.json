@@ -12,10 +12,13 @@
         "dest": "pdf_manager.py"
       }
     ],
-    "env": {
-      "CLOUDINARY_CLOUD_NAME": "@cloudinary_cloud_name",
-      "CLOUDINARY_API_KEY": "@cloudinary_api_key",
-      "CLOUDINARY_API_SECRET": "@cloudinary_api_secret"
-    }
+    
+        "env": {
+          "CLOUDINARY_CLOUD_NAME": "@CLOUDINARY_CLOUD_NAME",
+          "CLOUDINARY_API_KEY": "@CLOUDINARY_API_KEY",
+          "CLOUDINARY_API_SECRET": "@CLOUDINARY_API_SECRET"
+        }
+      
+      
   }
   
