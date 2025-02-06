@@ -473,55 +473,67 @@ HTML_TEMPLATE = """
 
         // Merge print queue
         async function mergePrintQueue() {
-            const status = document.getElementById('status');
-            const password = document.getElementById('adminPassword').value;
-            const batch = document.getElementById('batchSelect').value;
+    const status = document.getElementById('status');
+    const password = document.getElementById('adminPassword').value;
+    const batch = document.getElementById('batchSelect').value;
 
-            if (!password) {
-                status.textContent = 'Please enter admin password';
-                status.className = 'status error';
-                return;
+    if (!password) {
+        status.textContent = 'Please enter admin password';
+        status.className = 'status error';
+        return;
+    }
+
+    try {
+        status.textContent = 'Merging PDFs...';
+        status.className = 'status';
+
+        // Show loading indication
+        const originalButtonText = event.target.innerHTML;
+        event.target.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Merging...';
+        event.target.disabled = true;
+
+        const response = await fetch(`/merge?password=${encodeURIComponent(password)}&batch=${batch}`, {
+            method: 'POST'
+        });
+
+        if (response.ok) {
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/pdf')) {
+                // Trigger download directly
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `print_queue_batch${batch}_${new Date().toISOString().split('T')[0]}.pdf`;
+                document.body.appendChild(a);
+                a.click(); // Immediate download trigger
+                
+                // Cleanup
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                status.textContent = 'PDFs merged and downloaded successfully. Queue has been cleared.';
+                status.className = 'status success';
+                
+                document.getElementById('adminPassword').value = '';
+                
+                // Refresh queue after a short delay
+                setTimeout(viewQueue, 1000);
+            } else {
+                throw new Error('Invalid response format');
             }
-
-            try {
-                status.textContent = 'Merging PDFs...';
-                status.className = 'status';
-
-                const response = await fetch(`/merge?password=${encodeURIComponent(password)}&batch=${batch}`, {
-                    method: 'POST'
-                });
-
-                if (response.ok) {
-                    const contentType = response.headers.get('content-type');
-                    if (contentType && contentType.includes('application/pdf')) {
-                        const blob = await response.blob();
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `print_queue_batch${batch}_${new Date().toISOString().split('T')[0]}.pdf`;
-                        document.body.appendChild(a);
-                        a.click();
-                        window.URL.revokeObjectURL(url);
-                        document.body.removeChild(a);
-
-                        status.textContent = 'PDFs merged and downloaded successfully. Queue has been cleared.';
-                        status.className = 'status success';
-                        
-                        document.getElementById('adminPassword').value = '';
-                        
-                        setTimeout(viewQueue, 1000);
-                    } else {
-                        throw new Error('Invalid response format');
-                    }
-                } else {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Merge failed');
-                }
-            } catch (error) {
-                status.textContent = `Error: ${error.message}`;
-                status.className = 'status error';
-            }
+        } else {
+            const error = await response.json();
+            throw new Error(error.error || 'Merge failed');
         }
+    } catch (error) {
+        status.textContent = `Error: ${error.message}`;
+        status.className = 'status error';
+    } finally {
+        // Restore button state
+        event.target.innerHTML = originalButtonText;
+        event.target.disabled = false;
+    }
 
         // Add auto-refresh functionality
         function startQueueAutoRefresh() {
@@ -559,7 +571,9 @@ def health_check():
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
 
 @app.route('/submit', methods=['POST'])
+
 def submit_print():
+    logger.info(f"Cloudinary upload result: {upload_result}")
     try:
         if 'pdf' not in request.files:
             return jsonify({'error': 'No file uploaded'}), 400
@@ -676,11 +690,28 @@ def merge_queue():
         temp_files = []
 
         try:
-            for item in queue:
-                response = requests.get(item['cloudinary_url'], timeout=30)
-                response.raise_for_status()
-                
-                temp_path = merge_dir / f"temp_{Path(item['original_filename']).name}"
+            for idx, item in enumerate(queue, 1):
+                cloudinary_url = item.get('cloudinary_url')
+                logger.info(f"Attempting to retrieve PDF from URL: {cloudinary_url}")
+
+                # Enhanced error handling and retry mechanism
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = requests.get(cloudinary_url, timeout=30)
+                        response.raise_for_status()
+                        break
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"PDF retrieval attempt {attempt + 1} failed: {str(e)}")
+                        if attempt == max_retries - 1:
+                            raise
+
+                # Validate response
+                if response.status_code != 200:
+                    logger.error(f"Failed to retrieve PDF for item {idx}: Status {response.status_code}")
+                    raise ValueError(f"Unable to download PDF for item {idx}")
+
+                temp_path = merge_dir / f"temp_{idx}_{Path(item['original_filename']).name}"
                 temp_files.append(temp_path)
                 
                 temp_path.write_bytes(response.content)
