@@ -62,7 +62,7 @@ except Exception as e:
 TEMP_DIR = Path(tempfile.gettempdir()) / 'print_queue'
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Admin password (using the one from your code)
+# Admin password
 ADMIN_PASSWORD = hashlib.sha256('jai ho'.encode()).hexdigest()
 
 # HTML template for the main page
@@ -241,7 +241,6 @@ HTML_TEMPLATE = """
             }
         }
 
-        /* File input styling */
         .file-input-wrapper {
             position: relative;
             overflow: hidden;
@@ -324,7 +323,6 @@ HTML_TEMPLATE = """
             <div id="status"></div>
         </div>
 
-        <!-- Queue list moved outside admin section -->
         <div id="queueList"></div>
 
         <div class="card">
@@ -348,76 +346,73 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
-        // File input update
+        // File input handling
         document.getElementById('pdfFile').addEventListener('change', function(e) {
             const fileName = e.target.files[0]?.name || 'No file selected';
-            document.getElementById('fileInputButton').innerHTML = `
-                <i class="fas fa-file-pdf"></i>
-                <p>${fileName}</p>
-            `;
+            document.getElementById('fileInputButton').querySelector('p').textContent = fileName;
         });
 
-        // Password visibility toggle
+        // Toggle password visibility
         function togglePasswordVisibility() {
             const passwordInput = document.getElementById('adminPassword');
-            const toggleIcon = document.querySelector('.password-toggle');
+            const icon = document.querySelector('.password-toggle');
+            
             if (passwordInput.type === 'password') {
                 passwordInput.type = 'text';
-                toggleIcon.classList.remove('fa-eye');
-                toggleIcon.classList.add('fa-eye-slash');
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
             } else {
                 passwordInput.type = 'password';
-                toggleIcon.classList.remove('fa-eye-slash');
-                toggleIcon.classList.add('fa-eye');
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
             }
         }
 
+        // Submit print job
         async function submitPrint() {
             const status = document.getElementById('status');
-            status.textContent = 'Submitting...';
-            status.className = 'status';
-            
+            const studentName = document.getElementById('studentName').value;
+            const pdfFile = document.getElementById('pdfFile').files[0];
+            const copies = document.getElementById('copies').value;
+            const batch = document.getElementById('batchSelect').value;
+
+            if (!studentName || !pdfFile || !copies || !batch) {
+                status.textContent = 'Please fill in all fields';
+                status.className = 'status error';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('name', studentName);
+            formData.append('pdf', pdfFile);
+            formData.append('copies', copies);
+            formData.append('batch', batch);
+
             try {
-                const name = document.getElementById('studentName').value;
-                const file = document.getElementById('pdfFile').files[0];
-                const copies = document.getElementById('copies').value;
-                const batch = document.getElementById('batchSelect').value;
-
-                if (!name || !file || !copies || !batch) {
-                    status.textContent = 'Please fill all fields';
-                    status.className = 'status error';
-                    return;
-                }
-
-                const formData = new FormData();
-                formData.append('name', name);
-                formData.append('pdf', file);
-                formData.append('copies', copies);
-                formData.append('batch', batch);
+                status.textContent = 'Submitting print job...';
+                status.className = 'status';
 
                 const response = await fetch('/submit', {
                     method: 'POST',
                     body: formData
                 });
 
-                const result = await response.json();
+                const data = await response.json();
 
                 if (response.ok) {
-                    status.textContent = result.message;
+                    status.textContent = data.message || 'Print job submitted successfully';
                     status.className = 'status success';
+                    
                     // Clear form
                     document.getElementById('studentName').value = '';
                     document.getElementById('pdfFile').value = '';
                     document.getElementById('copies').value = '1';
-                    document.getElementById('fileInputButton').innerHTML = `
-                        <i class="fas fa-cloud-upload-alt"></i>
-                        <p>Drop your PDF file here or click to browse</p>
-                        <small>Only PDF files are accepted</small>
-                    `;
+                    document.getElementById('fileInputButton').querySelector('p').textContent = 'Drop your PDF file here or click to browse';
+                    
                     // Refresh queue
                     viewQueue();
                 } else {
-                    throw new Error(result.error || 'Submission failed');
+                    throw new Error(data.error || 'Submission failed');
                 }
             } catch (error) {
                 status.textContent = `Error: ${error.message}`;
@@ -425,79 +420,119 @@ HTML_TEMPLATE = """
             }
         }
 
-       async function viewQueue() {
-    const queueList = document.getElementById('queueList');
-    const batch = document.getElementById('batchSelect').value;
-    
-    try {
-        // Show loading state
-        queueList.innerHTML = '<div class="card"><div class="status">Loading queue...</div></div>';
-        
-        // URL without password parameter
-        const url = `/queue?batch=${batch}`;
-            
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.message || `Server returned ${response.status}`);
+        // View queue
+        async function viewQueue() {
+            const queueList = document.getElementById('queueList');
+            const batch = document.getElementById('batchSelect').value;
+
+            try {
+                const response = await fetch(`/queue?batch=${batch}`);
+                const queue = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(queue.error || 'Failed to fetch queue');
+                }
+
+                if (queue.length === 0) {
+                    queueList.innerHTML = `
+                        <div class="card">
+                            <h2><i class="fas fa-list"></i> Print Queue (Batch ${batch})</h2>
+                            <p>Queue is empty</p>
+                        </div>`;
+                    return;
+                }
+
+                let queueHTML = `
+                    <div class="card">
+                        <h2><i class="fas fa-list"></i> Print Queue (Batch ${batch})</h2>`;
+
+                queue.forEach((item, index) => {
+                    queueHTML += `
+                        <div class="queue-item">
+                            <strong>#${index + 1}</strong>
+                            <div class="queue-info">
+                                <div><i class="fas fa-user"></i> ${item.name}</div>
+                                <div><i class="fas fa-file-pdf"></i> ${item.original_filename}</div>
+                                <div><i class="fas fa-copy"></i> ${item.copies} copies</div>
+                                <div><i class="fas fa-clock"></i> ${item.timestamp}</div>
+                            </div>
+                        </div>`;
+                });
+
+                queueHTML += '</div>';
+                queueList.innerHTML = queueHTML;
+
+            } catch (error) {
+                queueList.innerHTML = `
+                    <div class="card">
+                        <h2><i class="fas fa-list"></i> Print Queue (Batch ${batch})</h2>
+                        <div class="status error">Error: ${error.message}</div>
+                    </div>`;
+            }
         }
 
-        const queue = await response.json();
-        
-        if (!Array.isArray(queue)) {
-            throw new Error('Invalid queue data received');
+        // Merge print queue
+        async function mergePrintQueue() {
+            const status = document.getElementById('status');
+            const password = document.getElementById('adminPassword').value;
+            const batch = document.getElementById('batchSelect').value;
+
+            if (!password) {
+                status.textContent = 'Please enter admin password';
+                status.className = 'status error';
+                return;
+            }
+
+            try {
+                status.textContent = 'Merging PDFs...';
+                status.className = 'status';
+
+                const response = await fetch(`/merge?password=${encodeURIComponent(password)}&batch=${batch}`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/pdf')) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `print_queue_batch${batch}_${new Date().toISOString().split('T')[0]}.pdf`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+
+                        status.textContent = 'PDFs merged and downloaded successfully. Queue has been cleared.';
+                        status.className = 'status success';
+                        
+                        document.getElementById('adminPassword').value = '';
+                        
+                        setTimeout(viewQueue, 1000);
+                    } else {
+                        throw new Error('Invalid response format');
+                    }
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Merge failed');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+            }
         }
-        
-        if (queue.length === 0) {
-            queueList.innerHTML = '<div class="card"><div class="status">Queue is empty for this batch</div></div>';
-            return;
+
+        // Add auto-refresh functionality
+        function startQueueAutoRefresh() {
+            setInterval(viewQueue, 30000);
         }
 
-        queueList.innerHTML = ` 
-            <div class="card">
-                <h2><i class="fas fa-list"></i> Current Queue - Batch ${batch}</h2>
-                ${queue.map(item => `
-                    <div class="queue-item">
-                        <strong>${item.name}</strong>
-                        <div class="queue-info">
-                            <div>
-                                <i class="fas fa-file-pdf"></i>
-                                ${item.original_filename || 'Unnamed File'}
-                            </div>
-                            <div>
-                                <i class="fas fa-copy"></i>
-                                ${item.copies} ${item.copies === 1 ? 'copy' : 'copies'}
-                            </div>
-                            <div>
-                                <i class="fas fa-clock"></i>
-                                ${new Date(item.timestamp).toLocaleString()}
-                            </div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    } catch (error) {
-        queueList.innerHTML = `
-    <div class="card">
-        <div class="status error">
-            <i class="fas fa-exclamation-circle"></i>
-            ${error.message.includes('403') ? 
-              'You need proper permissions to view the queue. Please contact an administrator.' : 
-              `Error loading queue: ${error.message}. Please try refreshing the page.`}
-        </div>
-    </div>
-`;
-
-`;
-
-                </div>
-            </div>
-        `;
-    }
-}
-
+        // Initialize auto-refresh when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            viewQueue();
+            startQueueAutoRefresh();
+        });
     </script>
 </body>
 </html>
@@ -600,11 +635,10 @@ def view_queue():
 
         try:
             batch = int(batch)
-            if batch not in [1, 2]:  # Adjust batch validation as needed
+            if batch not in [1, 2]:
                 raise ValueError
         except ValueError:
             return jsonify({'error': 'Invalid batch number'}), 400
-
 
         collection = batch1_collection if batch == 1 else batch2_collection
         queue = list(collection.find({}, {'_id': 0}))
@@ -659,13 +693,23 @@ def merge_queue():
             merger.close()
 
             # Clean up Cloudinary files and MongoDB records
+            cleanup_success = True
             for item in queue:
                 try:
                     cloudinary.uploader.destroy(item['public_id'], resource_type="raw")
                 except Exception as e:
                     logger.error(f"Cloudinary cleanup error: {str(e)}")
+                    cleanup_success = False
 
-            collection.delete_many({})
+            # Clear the MongoDB collection
+            try:
+                collection.delete_many({})
+            except Exception as e:
+                logger.error(f"MongoDB cleanup error: {str(e)}")
+                cleanup_success = False
+
+            if not cleanup_success:
+                logger.warning("Some cleanup operations failed, but proceeding with merge download")
 
             return send_file(
                 str(output_path),
@@ -677,60 +721,50 @@ def merge_queue():
         finally:
             # Clean up temporary files
             for temp_file in temp_files:
-                if temp_file.exists():
-                    temp_file.unlink()
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception as e:
+                    logger.error(f"Error removing temp file {temp_file}: {str(e)}")
+            
             if merge_dir and merge_dir.exists():
                 try:
+                    for file in merge_dir.glob('*'):
+                        try:
+                            file.unlink()
+                        except Exception as e:
+                            logger.error(f"Error removing file in merge dir: {str(e)}")
                     merge_dir.rmdir()
                 except Exception as e:
                     logger.error(f"Error removing merge directory: {str(e)}")
 
     except Exception as e:
         logger.error(f"Merge queue error: {str(e)}")
-        # Clean up on error
         if merge_dir and merge_dir.exists():
             try:
                 for file in merge_dir.glob('*'):
-                    file.unlink()
+                    try:
+                        file.unlink()
+                    except Exception:
+                        pass
                 merge_dir.rmdir()
             except Exception as cleanup_error:
                 logger.error(f"Error during cleanup: {str(cleanup_error)}")
         return jsonify({'error': str(e)}), 500
 
-def create_required_directories():
-    """Create necessary directories for the application"""
-    try:
-        TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        logger.info("Successfully created required directories")
-    except Exception as e:
-        logger.error(f"Failed to create directories: {str(e)}")
-        raise
-
-def test_connections():
-    """Test database and storage connections"""
-    try:
-        # Test MongoDB connection
-        client.server_info()
-        logger.info("Successfully connected to MongoDB")
-        
-        # Test Cloudinary configuration
-        cloudinary.api.ping()
-        logger.info("Successfully connected to Cloudinary")
-    except Exception as e:
-        logger.error(f"Connection test failed: {str(e)}")
-        raise
-
 if __name__ == '__main__':
     try:
-        # Initialize application requirements
-        create_required_directories()
-        test_connections()
+        # Create required directories
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Test connections
+        client.server_info()  # Test MongoDB connection
+        cloudinary.api.ping()  # Test Cloudinary connection
         
         # Start the Flask application
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"Starting server on port {port}")
-        app.run(host='0.0.0.0', port=port)
+        app.run(host='0.0.0.0', port=port, debug=True)
     except Exception as e:
         logger.error(f"Failed to start application: {str(e)}")
         sys.exit(1)
-
