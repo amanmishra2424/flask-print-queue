@@ -26,9 +26,9 @@ CORS(app)
 
 try:
     cloudinary.config(
-        cloud_name='dwfzu7dyq',
-        api_key='572843829761592',
-        api_secret='zVHvbTsAm7D9QMBFHPhgDwhfCEw'
+        cloud_name='disht9nbk',
+        api_key='587297388865477',
+        api_secret='44JUq6ZcveKznDxyXT7OT4GyoTs'
     )
 except Exception as e:
     logger.error(f"Cloudinary configuration error: {str(e)}")
