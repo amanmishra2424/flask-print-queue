@@ -269,23 +269,19 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1><i class="fas fa-print"></i> Welcome ,we print for you</h1>
+            <h1><i class="fas fa-print"></i> Welcome, We Print For you</h1>
         </div>
-       
+        
         <div class="card">
-            <h2><i class="fas fa-file-upload"></i> For Students</h2>
-            
+            <h2><i class="fas fa-file-upload"></i>For Students</h2>
             <div class="form-group">
                 <label for="studentName">Name</label>
                 <input type="text" id="studentName" placeholder="Enter your name" required>
             </div>
-                <div class="header">
-                 
-                <a href="https://smallpdf.com/word-to-pdf" class="convert-btn" target="_blank">
-                 <button><i class="fas fa-file-pdf"></i> Convert to PDF</button>
-                    </a>
-
-            </div>
+                  <a href="https://smallpdf.com/word-to-pdf" class="convert-btn" target="_blank">
+                 <button><i class="fas fa-file-pdf"></i>Word To Pdf</button>
+                 </a>
+            
             <div class="form-group">
                 <label for="pdfFile">PDF File</label>
                 <div class="file-input-wrapper">
