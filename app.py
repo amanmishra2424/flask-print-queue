@@ -311,7 +311,7 @@ HTML_TEMPLATE = """
             
             <div class="form-group">
                 <label for="batchSelect">Batch</label>
-                <select id="batchSelect" required>
+                <select id="batchSelect" required onchange="viewQueue()">
                     <option value="1">Batch 1</option>
                     <option value="2">Batch 2</option>
                 </select>
@@ -324,28 +324,31 @@ HTML_TEMPLATE = """
             <div id="status"></div>
         </div>
 
+        <!-- Queue list moved outside admin section -->
+        <div id="queueList"></div>
+
         <div class="card">
             <h2><i class="fas fa-lock"></i> Admin Controls</h2>
             <div class="form-group">
                 <label for="adminPassword">Admin Password</label>
-                <input type="password" id="adminPassword" placeholder="Enter admin password">
+                <div style="position: relative;">
+                    <input type="password" id="adminPassword" placeholder="Enter admin password">
+                    <i class="fas fa-eye password-toggle" 
+                       onclick="togglePasswordVisibility()" 
+                       style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer;"></i>
+                </div>
             </div>
             
             <div class="button-group">
-                <button onclick="viewQueue()">
-                    <i class="fas fa-list"></i> View Queue
-                </button>
                 <button onclick="mergePrintQueue()">
                     <i class="fas fa-file-pdf"></i> Merge and Download
                 </button>
             </div>
         </div>
-
-        <div id="queueList"></div>
     </div>
 
     <script>
-        // Update the file input button text when a file is selected
+        // File input update
         document.getElementById('pdfFile').addEventListener('change', function(e) {
             const fileName = e.target.files[0]?.name || 'No file selected';
             document.getElementById('fileInputButton').innerHTML = `
@@ -353,6 +356,21 @@ HTML_TEMPLATE = """
                 <p>${fileName}</p>
             `;
         });
+
+        // Password visibility toggle
+        function togglePasswordVisibility() {
+            const passwordInput = document.getElementById('adminPassword');
+            const toggleIcon = document.querySelector('.password-toggle');
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                toggleIcon.classList.remove('fa-eye');
+                toggleIcon.classList.add('fa-eye-slash');
+            } else {
+                passwordInput.type = 'password';
+                toggleIcon.classList.remove('fa-eye-slash');
+                toggleIcon.classList.add('fa-eye');
+            }
+        }
 
         async function submitPrint() {
             const status = document.getElementById('status');
@@ -396,6 +414,8 @@ HTML_TEMPLATE = """
                         <p>Drop your PDF file here or click to browse</p>
                         <small>Only PDF files are accepted</small>
                     `;
+                    // Refresh queue
+                    viewQueue();
                 } else {
                     throw new Error(result.error || 'Submission failed');
                 }
@@ -405,88 +425,79 @@ HTML_TEMPLATE = """
             }
         }
 
-        async function mergePrintQueue() {
-            try {
-                const password = document.getElementById('adminPassword').value;
-                const batch = document.getElementById('batchSelect').value;
-
-                if (!password || !batch) {
-                    alert('Please enter password and select batch');
-                    return;
-                }
-
-                const response = await fetch(`/merge?batch=${batch}&password=${encodeURIComponent(password)}`, {
-                    method: 'POST'
-                });
-
-                if (!response.ok) {
-                    const result = await response.json();
-                    throw new Error(result.error || 'Merge failed');
-                }
-
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `print_queue_batch${batch}_${new Date().toISOString().split('T')[0]}.pdf`;
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                a.remove();
-                
-                await viewQueue();
-            } catch (error) {
-                alert(`Error: ${error.message}`);
-            }
+       async function viewQueue() {
+    const queueList = document.getElementById('queueList');
+    const batch = document.getElementById('batchSelect').value;
+    
+    try {
+        // Show loading state
+        queueList.innerHTML = '<div class="card"><div class="status">Loading queue...</div></div>';
+        
+        // URL without password parameter
+        const url = `/queue?batch=${batch}`;
+            
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || `Server returned ${response.status}`);
         }
 
-        async function viewQueue() {
-            const queueList = document.getElementById('queueList');
-            const password = document.getElementById('adminPassword').value;
-            const batch = document.getElementById('batchSelect').value;
+        const queue = await response.json();
+        
+        if (!Array.isArray(queue)) {
+            throw new Error('Invalid queue data received');
+        }
+        
+        if (queue.length === 0) {
+            queueList.innerHTML = '<div class="card"><div class="status">Queue is empty for this batch</div></div>';
+            return;
+        }
 
-            try {
-                if (!password) {
-                    queueList.innerHTML = '<div class="status error">Please enter admin password</div>';
-                    return;
-                }
-
-                const response = await fetch(`/queue?batch=${batch}&password=${encodeURIComponent(password)}`);
-                
-                if (!response.ok) {
-                    throw new Error('Unable to view queue');
-                }
-
-                const queue = await response.json();
-                
-                if (queue.length === 0) {
-                    queueList.innerHTML = '<div class="status">Queue is empty</div>';
-                    return;
-                }
-
-                queueList.innerHTML = queue.map(item => `
+        queueList.innerHTML = ` 
+            <div class="card">
+                <h2><i class="fas fa-list"></i> Current Queue - Batch ${batch}</h2>
+                ${queue.map(item => `
                     <div class="queue-item">
                         <strong>${item.name}</strong>
                         <div class="queue-info">
                             <div>
                                 <i class="fas fa-file-pdf"></i>
-                                ${item.original_filename}
+                                ${item.original_filename || 'Unnamed File'}
                             </div>
                             <div>
                                 <i class="fas fa-copy"></i>
-                                ${item.copies} copies
+                                ${item.copies} ${item.copies === 1 ? 'copy' : 'copies'}
                             </div>
                             <div>
                                 <i class="fas fa-clock"></i>
-                                ${item.timestamp}
+                                ${new Date(item.timestamp).toLocaleString()}
                             </div>
                         </div>
                     </div>
-                `).join('');
-            } catch (error) {
-                queueList.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
-            }
-        }
+                `).join('')}
+            </div>
+        `;
+    } catch (error) {
+        queueList.innerHTML = `
+    <div class="card">
+        <div class="status error">
+            <i class="fas fa-exclamation-circle"></i>
+            ${error.message.includes('403') ? 
+              'You need proper permissions to view the queue. Please contact an administrator.' : 
+              `Error loading queue: ${error.message}. Please try refreshing the page.`}
+        </div>
+    </div>
+`;
+
+`;
+
+                </div>
+            </div>
+        `;
+    }
+}
+
     </script>
 </body>
 </html>
@@ -582,18 +593,18 @@ def submit_print():
 @app.route('/queue', methods=['GET'])
 def view_queue():
     try:
-        password = request.args.get('password', '')
         batch = request.args.get('batch')
 
-        if not batch or hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
-            return jsonify({'error': 'Invalid credentials'}), 403
+        if not batch:
+            return jsonify({'error': 'Batch number is required'}), 400
 
         try:
             batch = int(batch)
-            if batch not in [1, 2]:
+            if batch not in [1, 2]:  # Adjust batch validation as needed
                 raise ValueError
         except ValueError:
             return jsonify({'error': 'Invalid batch number'}), 400
+
 
         collection = batch1_collection if batch == 1 else batch2_collection
         queue = list(collection.find({}, {'_id': 0}))
