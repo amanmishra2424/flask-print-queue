@@ -14,7 +14,6 @@ from pathlib import Path
 import logging
 import sys
 
-# Enhanced logging configuration
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Cloudinary Configuration
 try:
     cloudinary.config(
         cloud_name='disht9nbk',
@@ -35,20 +33,15 @@ try:
 except Exception as e:
     logger.error(f"Cloudinary configuration error: {str(e)}")
     raise
-
-# MongoDB Configuration
 def get_mongodb_connection():
     try:
         MONGO_URI = 'mongodb+srv://print_queue_db:jai_ho@aman.dlsk6.mongodb.net/'
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        # Test the connection
         client.server_info()
         return client
     except Exception as e:
         logger.error(f"MongoDB connection error: {str(e)}")
         raise
-
-# Initialize MongoDB connection
 try:
     client = get_mongodb_connection()
     db = client['print_queue_db']
@@ -57,15 +50,10 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize MongoDB: {str(e)}")
     raise
-
-# Set up temporary directory
 TEMP_DIR = Path(tempfile.gettempdir()) / 'print_queue'
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-# Admin password
 ADMIN_PASSWORD = hashlib.sha256('jai ho'.encode()).hexdigest()
 
-# HTML template for the main page
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -545,15 +533,13 @@ def index():
 @app.route('/health')
 def health_check():
     try:
-        # Test MongoDB connection
         client.server_info()
-        # Test Cloudinary connection
         cloudinary.api.ping()
-        # Test temp directory
         test_file = TEMP_DIR / 'health_check.txt'
         test_file.write_text('test')
         test_file.unlink()
-        return jsonify({"status": "healthy"}), 200
+        # return jsonify({"status": "healthy"}), 200
+        return "Server Working on port http://127.0.0.1:5000/", 200
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
@@ -568,11 +554,8 @@ def submit_print():
         name = request.form.get('name')
         copies = request.form.get('copies')
         batch = request.form.get('batch')
-
-        # Validation
         if not all([name, copies, batch, file.filename]):
             return jsonify({'error': 'Missing required fields'}), 400
-
         try:
             copies = int(copies)
             batch = int(batch)
@@ -583,24 +566,18 @@ def submit_print():
 
         if not file.filename.lower().endswith('.pdf'):
             return jsonify({'error': 'Only PDF files are allowed'}), 400
-
-        # Save file temporarily
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe_filename = f"{timestamp}_{Path(file.filename).stem}.pdf"
         temp_path = TEMP_DIR / safe_filename
 
         try:
             file.save(str(temp_path))
-
-            # Upload to Cloudinary
             upload_result = cloudinary.uploader.upload(
                 str(temp_path),
                 resource_type="raw",
                 folder="print_queue",
                 public_id=f"print_{timestamp}_{Path(file.filename).stem}"
             )
-
-            # Store in MongoDB
             collection = batch1_collection if batch == 1 else batch2_collection
             document = {
                 'name': name,
@@ -691,8 +668,6 @@ def merge_queue():
             output_path = merge_dir / f'merged_batch_{batch}.pdf'
             merger.write(str(output_path))
             merger.close()
-
-            # Clean up Cloudinary files and MongoDB records
             cleanup_success = True
             for item in queue:
                 try:
@@ -700,8 +675,6 @@ def merge_queue():
                 except Exception as e:
                     logger.error(f"Cloudinary cleanup error: {str(e)}")
                     cleanup_success = False
-
-            # Clear the MongoDB collection
             try:
                 collection.delete_many({})
             except Exception as e:
@@ -719,7 +692,6 @@ def merge_queue():
             )
 
         finally:
-            # Clean up temporary files
             for temp_file in temp_files:
                 try:
                     if temp_file.exists():
@@ -754,14 +726,9 @@ def merge_queue():
 
 if __name__ == '__main__':
     try:
-        # Create required directories
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        
-        # Test connections
-        client.server_info()  # Test MongoDB connection
-        cloudinary.api.ping()  # Test Cloudinary connection
-        
-        # Start the Flask application
+        client.server_info()  
+        cloudinary.api.ping()  
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"Starting server on port {port}")
         app.run(host='0.0.0.0', port=port, debug=True)
