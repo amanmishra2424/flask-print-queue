@@ -71,7 +71,7 @@ HTML_TEMPLATE = """
             --secondary-color: #f3f4f6;
             --success-color: #10b981;
             --error-color: #ef4444;
-            
+
             --text-color: #1f2937;
             --border-radius: 8px;
             --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -162,6 +162,51 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 0.5rem;
+        }
+                    /* Footer Styles */
+        .footer {
+            background-color: #f9fafb;
+            padding: 0.5rem;
+            text-align: center;
+            border-top: 1px solid #e5e7eb;
+            margin-top: 1rem;
+            color: #6b7280;
+            height: 100px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }   
+
+        .footer-content {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .footer-slogan {
+            font-style: italic;
+            font-size: 1.1rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+
+        .footer-contact {
+            display: flex;
+            justify-content: center;
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        .footer-contact a {
+            color: #6b7280;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: color 0.2s;
+        }
+
+        .footer-contact a:hover {
+            color: var(--primary-color);
         }
 
         button:hover {
@@ -319,11 +364,11 @@ HTML_TEMPLATE = """
                 <label for="studentName">Name</label>
                 <input type="text" id="studentName" placeholder="Enter your name" required>
             </div>
-            
+            <div style="width:157px; height:44px">
             <a href="https://smallpdf.com/word-to-pdf" class="convert-btn" target="_blank">
                 <button><i class="fas fa-file-pdf"></i> Word To Pdf</button>
             </a>
-
+                </div>
             <div class="form-group">
                 <label for="pdfFile">PDF File</label>
                 <div class="file-input-wrapper">
@@ -393,7 +438,27 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-
+            <div style="height:100px;">
+              <footer class="footer">
+       
+     <div class="footer-content">
+            <div class="footer-slogan">
+                "Print Smarter, Print Faster: Your Documents, Our Passion"
+            </div>
+            <div class="copyright">
+                &copy; 2025 Print For You. All Rights Reserved.
+            </div>
+            <div class="footer-contact">
+                <a href="mailto:amanmishraaa767@gmail.com">
+                    <i class="fas fa-envelope"></i> amanmishraaa767@gmail.com
+                </a>
+                <a href="tel:+917678023772">
+                    <i class="fas fa-phone"></i> 7678023772
+                </a>
+            </div>
+        </div>
+         </footer>
+         </div>
     <script>
         // File input handling
         document.getElementById('pdfFile').addEventListener('change', function(e) {
@@ -633,6 +698,27 @@ HTML_TEMPLATE = """
                 closeModal();
             }
         }
+        <div style="height:200px;">
+           <footer class="footer";>
+       
+                <div class="footer-content">
+            <div class="footer-slogan">
+                "Print Smarter, Print Faster: Your Documents, Our Passion"
+            </div>
+            <div class="copyright">
+                &copy; 2025 Print For You. All Rights Reserved.
+            </div>
+            <div class="footer-contact">
+                <a href="mailto:amanmishraaa767@gmail.com">
+                    <i class="fas fa-envelope"></i> amanmishraaa767@gmail.com
+                </a>
+                <a href="tel:+917678023772">
+                    <i class="fas fa-phone"></i> 7678023772
+                </a>
+            </div>
+        </div>
+         </footer>
+         </div>
     </script>
 </body>
 </html>
