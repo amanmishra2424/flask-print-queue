@@ -71,6 +71,7 @@ HTML_TEMPLATE = """
             --secondary-color: #f3f4f6;
             --success-color: #10b981;
             --error-color: #ef4444;
+            
             --text-color: #1f2937;
             --border-radius: 8px;
             --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -82,22 +83,17 @@ HTML_TEMPLATE = """
             box-sizing: border-box;
         }
 
-        html {
-            font-size: 16px;
-        }
-
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
             background-color: #f9fafb;
             color: var(--text-color);
-            padding: 1rem;
+            padding: 2rem;
         }
 
         .container {
             max-width: 1000px;
             margin: 0 auto;
-            width: 100%;
         }
 
         .header {
@@ -109,8 +105,8 @@ HTML_TEMPLATE = """
         .card {
             background: white;
             border-radius: var(--border-radius);
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
             box-shadow: var(--shadow);
         }
 
@@ -120,7 +116,6 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            font-size: 1.25rem;
         }
 
         .form-group {
@@ -132,7 +127,6 @@ HTML_TEMPLATE = """
             margin-bottom: 0.5rem;
             font-weight: 500;
             color: var(--text-color);
-            font-size: 0.95rem;
         }
 
         input, select {
@@ -152,7 +146,6 @@ HTML_TEMPLATE = """
 
         .button-group {
             display: flex;
-            flex-wrap: wrap;
             gap: 1rem;
             margin-top: 1.5rem;
         }
@@ -168,10 +161,7 @@ HTML_TEMPLATE = """
             transition: background-color 0.2s;
             display: flex;
             align-items: center;
-            justify-content: center;
             gap: 0.5rem;
-            flex-grow: 1;
-            min-width: 150px;
         }
 
         button:hover {
@@ -187,6 +177,25 @@ HTML_TEMPLATE = """
             background-color: #dc2626;
         }
 
+        .status {
+            padding: 1rem;
+            margin-top: 1rem;
+            border-radius: var(--border-radius);
+            font-weight: 500;
+        }
+
+        .success {
+            background-color: #ecfdf5;
+            color: var(--success-color);
+            border: 1px solid #a7f3d0;
+        }
+
+        .error {
+            background-color: #fef2f2;
+            color: var(--error-color);
+            border: 1px solid #fecaca;
+        }
+
         .queue-item {
             background: var(--secondary-color);
             padding: 1rem;
@@ -195,10 +204,14 @@ HTML_TEMPLATE = """
             border-left: 4px solid var(--primary-color);
         }
 
+        .queue-item strong {
+            color: var(--primary-color);
+        }
+
         .queue-info {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 0.75rem;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
             margin-top: 0.5rem;
         }
 
@@ -206,25 +219,10 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            font-size: 0.9rem;
         }
 
-        .file-input-wrapper {
-            position: relative;
-            overflow: hidden;
-            display: inline-block;
-            width: 100%;
-        }
-
-        .file-input-button {
-            background-color: var(--secondary-color);
-            border: 1px dashed var(--primary-color);
-            padding: 1.5rem;
-            text-align: center;
-            border-radius: var(--border-radius);
-            cursor: pointer;
-            transition: all 0.2s;
-            word-break: break-word;
+        .queue-info i {
+            color: var(--primary-color);
         }
 
         .modal {
@@ -236,71 +234,75 @@ HTML_TEMPLATE = """
             height: 100%;
             background-color: rgba(0, 0, 0, 0.5);
             z-index: 1000;
-            padding: 1rem;
-            overflow-y: auto;
         }
 
         .modal-content {
             background-color: white;
             margin: 15% auto;
-            padding: 1.5rem;
+            padding: 2rem;
             border-radius: var(--border-radius);
-            width: 100%;
+            width: 90%;
             max-width: 500px;
         }
 
         .modal-buttons {
             display: flex;
-            flex-wrap: wrap;
             justify-content: flex-end;
             gap: 1rem;
             margin-top: 1.5rem;
         }
 
         .modal-buttons button {
-            flex-grow: 0;
-            min-width: auto;
+            padding: 0.5rem 1rem;
         }
 
-        @media (max-width: 600px) {
-            html {
-                font-size: 14px;
-            }
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
 
+        .file-input-wrapper input[type="file"] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .file-input-button {
+            background-color: var(--secondary-color);
+            border: 1px dashed var(--primary-color);
+            padding: 2rem;
+            text-align: center;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .file-input-button:hover {
+            background-color: #e5e7eb;
+        }
+
+        .file-input-button i {
+            font-size: 2rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+
+        @media (max-width: 768px) {
             body {
-                padding: 0.5rem;
-            }
-
-            .card {
                 padding: 1rem;
             }
 
-            .queue-info {
-                grid-template-columns: 1fr;
-            }
-
-            .button-group, .modal-buttons {
+            .button-group {
                 flex-direction: column;
             }
 
             button {
                 width: 100%;
-                min-width: 100%;
-            }
-
-            .modal {
-                padding: 0;
-            }
-
-            .modal-content {
-                margin: 10% auto;
-                width: calc(100% - 2rem);
-            }
-        }
-
-        @media (max-height: 600px) {
-            .modal-content {
-                margin: 5% auto;
             }
         }
     </style>
