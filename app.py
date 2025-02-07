@@ -1,6 +1,7 @@
 from flask import Flask, request, send_file, jsonify, render_template_string
 from flask_cors import CORS
-from PyPDF2 import PdfMerger
+from PyPDF2 import PdfMerger, PdfReader
+from bson import ObjectId
 import os
 import hashlib
 import requests
@@ -33,6 +34,7 @@ try:
 except Exception as e:
     logger.error(f"Cloudinary configuration error: {str(e)}")
     raise
+
 def get_mongodb_connection():
     try:
         MONGO_URI = 'mongodb+srv://print_queue_db:jai_ho@aman.dlsk6.mongodb.net/'
@@ -42,6 +44,7 @@ def get_mongodb_connection():
     except Exception as e:
         logger.error(f"MongoDB connection error: {str(e)}")
         raise
+
 try:
     client = get_mongodb_connection()
     db = client['print_queue_db']
@@ -50,6 +53,7 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize MongoDB: {str(e)}")
     raise
+
 TEMP_DIR = Path(tempfile.gettempdir()) / 'print_queue'
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 ADMIN_PASSWORD = hashlib.sha256('jai ho'.encode()).hexdigest()
@@ -78,17 +82,22 @@ HTML_TEMPLATE = """
             box-sizing: border-box;
         }
 
+        html {
+            font-size: 16px;
+        }
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
             background-color: #f9fafb;
             color: var(--text-color);
-            padding: 2rem;
+            padding: 1rem;
         }
 
         .container {
             max-width: 1000px;
             margin: 0 auto;
+            width: 100%;
         }
 
         .header {
@@ -100,8 +109,8 @@ HTML_TEMPLATE = """
         .card {
             background: white;
             border-radius: var(--border-radius);
-            padding: 2rem;
-            margin-bottom: 2rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
             box-shadow: var(--shadow);
         }
 
@@ -111,6 +120,7 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            font-size: 1.25rem;
         }
 
         .form-group {
@@ -122,6 +132,7 @@ HTML_TEMPLATE = """
             margin-bottom: 0.5rem;
             font-weight: 500;
             color: var(--text-color);
+            font-size: 0.95rem;
         }
 
         input, select {
@@ -141,6 +152,7 @@ HTML_TEMPLATE = """
 
         .button-group {
             display: flex;
+            flex-wrap: wrap;
             gap: 1rem;
             margin-top: 1.5rem;
         }
@@ -156,34 +168,23 @@ HTML_TEMPLATE = """
             transition: background-color 0.2s;
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 0.5rem;
+            flex-grow: 1;
+            min-width: 150px;
         }
 
         button:hover {
             background-color: var(--primary-dark);
         }
 
-        button i {
-            font-size: 1.1rem;
+        button.delete-btn {
+            background-color: var(--error-color);
+            padding: 0.5rem 1rem;
         }
 
-        .status {
-            padding: 1rem;
-            margin-top: 1rem;
-            border-radius: var(--border-radius);
-            font-weight: 500;
-        }
-
-        .success {
-            background-color: #ecfdf5;
-            color: var(--success-color);
-            border: 1px solid #a7f3d0;
-        }
-
-        .error {
-            background-color: #fef2f2;
-            color: var(--error-color);
-            border: 1px solid #fecaca;
+        button.delete-btn:hover {
+            background-color: #dc2626;
         }
 
         .queue-item {
@@ -194,14 +195,10 @@ HTML_TEMPLATE = """
             border-left: 4px solid var(--primary-color);
         }
 
-        .queue-item strong {
-            color: var(--primary-color);
-        }
-
         .queue-info {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.75rem;
             margin-top: 0.5rem;
         }
 
@@ -209,24 +206,7 @@ HTML_TEMPLATE = """
             display: flex;
             align-items: center;
             gap: 0.5rem;
-        }
-
-        .queue-info i {
-            color: var(--primary-color);
-        }
-
-        @media (max-width: 768px) {
-            body {
-                padding: 1rem;
-            }
-
-            .button-group {
-                flex-direction: column;
-            }
-
-            button {
-                width: 100%;
-            }
+            font-size: 0.9rem;
         }
 
         .file-input-wrapper {
@@ -236,33 +216,92 @@ HTML_TEMPLATE = """
             width: 100%;
         }
 
-        .file-input-wrapper input[type="file"] {
-            font-size: 100px;
-            position: absolute;
-            left: 0;
-            top: 0;
-            opacity: 0;
-            cursor: pointer;
-        }
-
         .file-input-button {
             background-color: var(--secondary-color);
             border: 1px dashed var(--primary-color);
-            padding: 2rem;
+            padding: 1.5rem;
             text-align: center;
             border-radius: var(--border-radius);
             cursor: pointer;
             transition: all 0.2s;
+            word-break: break-word;
         }
 
-        .file-input-button:hover {
-            background-color: #e5e7eb;
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            padding: 1rem;
+            overflow-y: auto;
         }
 
-        .file-input-button i {
-            font-size: 2rem;
-            color: var(--primary-color);
-            margin-bottom: 1rem;
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+            width: 100%;
+            max-width: 500px;
+        }
+
+        .modal-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .modal-buttons button {
+            flex-grow: 0;
+            min-width: auto;
+        }
+
+        @media (max-width: 600px) {
+            html {
+                font-size: 14px;
+            }
+
+            body {
+                padding: 0.5rem;
+            }
+
+            .card {
+                padding: 1rem;
+            }
+
+            .queue-info {
+                grid-template-columns: 1fr;
+            }
+
+            .button-group, .modal-buttons {
+                flex-direction: column;
+            }
+
+            button {
+                width: 100%;
+                min-width: 100%;
+            }
+
+            .modal {
+                padding: 0;
+            }
+
+            .modal-content {
+                margin: 10% auto;
+                width: calc(100% - 2rem);
+            }
+        }
+
+        @media (max-height: 600px) {
+            .modal-content {
+                margin: 5% auto;
+            }
         }
     </style>
 </head>
@@ -273,15 +312,16 @@ HTML_TEMPLATE = """
         </div>
         
         <div class="card">
-            <h2><i class="fas fa-file-upload"></i>For Students</h2>
+            <h2><i class="fas fa-file-upload"></i> For Students</h2>
             <div class="form-group">
                 <label for="studentName">Name</label>
                 <input type="text" id="studentName" placeholder="Enter your name" required>
             </div>
-                  <a href="https://smallpdf.com/word-to-pdf" class="convert-btn" target="_blank">
-                 <button><i class="fas fa-file-pdf"></i>Word To Pdf</button>
-                 </a>
             
+            <a href="https://smallpdf.com/word-to-pdf" class="convert-btn" target="_blank">
+                <button><i class="fas fa-file-pdf"></i> Word To Pdf</button>
+            </a>
+
             <div class="form-group">
                 <label for="pdfFile">PDF File</label>
                 <div class="file-input-wrapper">
@@ -336,6 +376,22 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteModal" class="modal">
+        <div class="modal-content">
+            <h3>Confirm Deletion</h3>
+            <p>Are you sure you want to delete this print job?</p>
+            <div class="modal-buttons">
+                <button onclick="confirmDelete()" class="delete-btn">
+                    <i class="fas fa-trash"></i> Delete
+                </button>
+                <button onclick="closeModal()" style="background-color: #6b7280;">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // File input handling
         document.getElementById('pdfFile').addEventListener('change', function(e) {
@@ -359,7 +415,46 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Submit print job
+        let deleteItemId = null;
+
+        function showDeleteModal(id) {
+            deleteItemId = id;
+            document.getElementById('deleteModal').style.display = 'block';
+        }
+
+        function closeModal() {
+            document.getElementById('deleteModal').style.display = 'none';
+            deleteItemId = null;
+        }
+
+        async function confirmDelete() {
+            if (!deleteItemId) return;
+            
+            const status = document.getElementById('status');
+            const batch = document.getElementById('batchSelect').value;
+            
+            try {
+                const response = await fetch(`/delete/${deleteItemId}?batch=${batch}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    status.textContent = data.message || 'Print job deleted successfully';
+                    status.className = 'status success';
+                    viewQueue();
+                } else {
+                    throw new Error(data.error || 'Delete failed');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+            }
+            
+            closeModal();
+        }
+
         async function submitPrint() {
             const status = document.getElementById('status');
             const studentName = document.getElementById('studentName').value;
@@ -411,7 +506,6 @@ HTML_TEMPLATE = """
             }
         }
 
-        // View queue
         async function viewQueue() {
             const queueList = document.getElementById('queueList');
             const batch = document.getElementById('batchSelect').value;
@@ -440,11 +534,17 @@ HTML_TEMPLATE = """
                 queue.forEach((item, index) => {
                     queueHTML += `
                         <div class="queue-item">
-                            <strong>#${index + 1}</strong>
+                            <div style="display: flex; justify-content: space-between; align-items: start;">
+                                <strong>#${index + 1}</strong>
+                                <button onclick="showDeleteModal('${item._id}')" class="delete-btn">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
                             <div class="queue-info">
                                 <div><i class="fas fa-user"></i> ${item.name}</div>
                                 <div><i class="fas fa-file-pdf"></i> ${item.original_filename}</div>
                                 <div><i class="fas fa-copy"></i> ${item.copies} copies</div>
+                                <div><i class="fas fa-file-alt"></i> ${item.page_count} pages</div>
                                 <div><i class="fas fa-clock"></i> ${item.timestamp}</div>
                             </div>
                         </div>`;
@@ -462,7 +562,6 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Merge print queue
         async function mergePrintQueue() {
             const status = document.getElementById('status');
             const password = document.getElementById('adminPassword').value;
@@ -516,7 +615,7 @@ HTML_TEMPLATE = """
 
         // Add auto-refresh functionality
         function startQueueAutoRefresh() {
-            setInterval(viewQueue, 30000);
+            setInterval(viewQueue, 30000); // Refresh every 30 seconds
         }
 
         // Initialize auto-refresh when page loads
@@ -524,6 +623,14 @@ HTML_TEMPLATE = """
             viewQueue();
             startQueueAutoRefresh();
         });
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('deleteModal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
     </script>
 </body>
 </html>
@@ -541,7 +648,6 @@ def health_check():
         test_file = TEMP_DIR / 'health_check.txt'
         test_file.write_text('test')
         test_file.unlink()
-        # return jsonify({"status": "healthy"}), 200
         return "Server Working on port http://127.0.0.1:5000/", 200
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -557,8 +663,10 @@ def submit_print():
         name = request.form.get('name')
         copies = request.form.get('copies')
         batch = request.form.get('batch')
+        
         if not all([name, copies, batch, file.filename]):
             return jsonify({'error': 'Missing required fields'}), 400
+            
         try:
             copies = int(copies)
             batch = int(batch)
@@ -569,18 +677,25 @@ def submit_print():
 
         if not file.filename.lower().endswith('.pdf'):
             return jsonify({'error': 'Only PDF files are allowed'}), 400
+            
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe_filename = f"{timestamp}_{Path(file.filename).stem}.pdf"
         temp_path = TEMP_DIR / safe_filename
 
         try:
             file.save(str(temp_path))
+            
+            # Get page count
+            pdf_reader = PdfReader(str(temp_path))
+            page_count = len(pdf_reader.pages)
+            
             upload_result = cloudinary.uploader.upload(
                 str(temp_path),
                 resource_type="raw",
                 folder="print_queue",
                 public_id=f"print_{timestamp}_{Path(file.filename).stem}"
             )
+            
             collection = batch1_collection if batch == 1 else batch2_collection
             document = {
                 'name': name,
@@ -588,9 +703,11 @@ def submit_print():
                 'cloudinary_url': upload_result['secure_url'],
                 'public_id': upload_result['public_id'],
                 'copies': copies,
+                'page_count': page_count,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
-            collection.insert_one(document)
+            result = collection.insert_one(document)
+            document['_id'] = str(result.inserted_id)
 
             return jsonify({'message': 'Print request submitted successfully'}), 200
 
@@ -621,11 +738,55 @@ def view_queue():
             return jsonify({'error': 'Invalid batch number'}), 400
 
         collection = batch1_collection if batch == 1 else batch2_collection
-        queue = list(collection.find({}, {'_id': 0}))
+        queue = list(collection.find())
+        
+        # Convert ObjectId to string for JSON serialization
+        for item in queue:
+            item['_id'] = str(item['_id'])
+            
         return jsonify(queue)
 
     except Exception as e:
         logger.error(f"View queue error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/delete/<item_id>', methods=['DELETE'])
+def delete_print_job(item_id):
+    try:
+        batch = request.args.get('batch')
+        if not batch:
+            return jsonify({'error': 'Batch number is required'}), 400
+
+        try:
+            batch = int(batch)
+            if batch not in [1, 2]:
+                raise ValueError
+        except ValueError:
+            return jsonify({'error': 'Invalid batch number'}), 400
+
+        collection = batch1_collection if batch == 1 else batch2_collection
+        
+        # Find the document first to get Cloudinary information
+        document = collection.find_one({'_id': ObjectId(item_id)})
+        if not document:
+            return jsonify({'error': 'Print job not found'}), 404
+
+        # Delete from Cloudinary
+        try:
+            cloudinary.uploader.destroy(document['public_id'], resource_type="raw")
+        except Exception as e:
+            logger.error(f"Error deleting from Cloudinary: {str(e)}")
+
+        # Delete from MongoDB
+        result = collection.delete_one({'_id': ObjectId(item_id)})
+        
+        if result.deleted_count == 0:
+            return jsonify({'error': 'Print job not found'}), 404
+
+        return jsonify({'message': 'Print job deleted successfully'}), 200
+
+    except Exception as e:
+        logger.error(f"Delete print job error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/merge', methods=['POST'])
@@ -671,6 +832,7 @@ def merge_queue():
             output_path = merge_dir / f'merged_batch_{batch}.pdf'
             merger.write(str(output_path))
             merger.close()
+
             cleanup_success = True
             for item in queue:
                 try:
@@ -678,6 +840,7 @@ def merge_queue():
                 except Exception as e:
                     logger.error(f"Cloudinary cleanup error: {str(e)}")
                     cleanup_success = False
+
             try:
                 collection.delete_many({})
             except Exception as e:
@@ -730,8 +893,8 @@ def merge_queue():
 if __name__ == '__main__':
     try:
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        client.server_info()  
-        cloudinary.api.ping()  
+        client.server_info()  # Test MongoDB connection
+        cloudinary.api.ping()  #
         port = int(os.environ.get('PORT', 5000))
         logger.info(f"Starting server on port {port}")
         app.run(host='0.0.0.0', port=port, debug=True)
