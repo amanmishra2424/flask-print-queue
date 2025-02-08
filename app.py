@@ -12,7 +12,7 @@ import cloudinary.api
 from pymongo import MongoClient
 import tempfile
 from pathlib import Path
-import logging
+import logging 
 import sys
 
 logging.basicConfig(
@@ -81,7 +81,49 @@ HTML_TEMPLATE = """
             padding: 0;
             box-sizing: border-box;
         }
+         .footer {
+            height: 100px;
+            background-color: white;
+            color:var(--primary-color) ;
+            padding: 1.5rem;
+            margin-top: 2rem;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 0.5rem;
+        }
 
+        .footer-content {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .footer a {
+            color:var(--primary-color)  ;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        .copyright {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        @media (max-width: 768px) {
+            .footer-content {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+        }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
@@ -376,7 +418,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-
+            
     <!-- Delete Confirmation Modal -->
     <div id="deleteModal" class="modal">
         <div class="modal-content">
@@ -392,7 +434,17 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-
+    <divstyle="width:800px;">
+    <footer class="footer">
+        <div class="footer-content">
+            <a href="tel:7678023772"><i class="fas fa-phone"></i> +91 7678023772</a>
+            <a href="mailto:amanmishraaa767@gmail.com"><i class="fas fa-envelope"></i> amanmishraaa767@gmail.com</a>
+        </div>
+        <div class="copyright">
+            Copyright &copy; 2025 We Print For You. All rights reserved.
+        </div>
+    </footer> 
+    </div>   
     <script>
         // File input handling
         document.getElementById('pdfFile').addEventListener('change', function(e) {
@@ -634,6 +686,7 @@ HTML_TEMPLATE = """
         }
         
     </script>
+        
 </body>
 </html>
 """
