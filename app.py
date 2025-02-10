@@ -12,8 +12,16 @@ import cloudinary.api
 from pymongo import MongoClient
 import tempfile
 from pathlib import Path
-import logging 
+import logging
 import sys
+import psutil
+import json
+
+def log_memory_usage():
+    """Log current memory usage"""
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    logger.info(f"Memory usage - RSS: {memory_info.rss / 1024 / 1024:.2f} MB, VMS: {memory_info.vms / 1024 / 1024:.2f} MB")
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -50,6 +58,7 @@ try:
     db = client['print_queue_db']
     batch1_collection = db['batch1_queue']
     batch2_collection = db['batch2_queue']
+    delete_requests_collection = db['delete_requests']
 except Exception as e:
     logger.error(f"Failed to initialize MongoDB: {str(e)}")
     raise
@@ -81,10 +90,10 @@ HTML_TEMPLATE = """
             padding: 0;
             box-sizing: border-box;
         }
-         .footer {
+        .footer {
             height: 100px;
             background-color: white;
-            color:var(--primary-color) ;
+            color: var(--primary-color);
             padding: 1.5rem;
             margin-top: 2rem;
             text-align: center;
@@ -102,7 +111,7 @@ HTML_TEMPLATE = """
         }
 
         .footer a {
-            color:var(--primary-color)  ;
+            color: var(--primary-color);
             text-decoration: none;
             display: flex;
             align-items: center;
@@ -199,14 +208,16 @@ HTML_TEMPLATE = """
             border-radius: var(--border-radius);
             font-size: 1rem;
             cursor: pointer;
-            transition: background-color 0.2s;
+            transition: background-color 0.2s, filter 0.2s;
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            filter: brightness(1.1);
         }
 
         button:hover {
             background-color: var(--primary-dark);
+            filter: brightness(1.3);
         }
 
         button.delete-btn {
@@ -295,6 +306,11 @@ HTML_TEMPLATE = """
 
         .modal-buttons button {
             padding: 0.5rem 1rem;
+            filter: brightness(1.1);
+        }
+
+        .modal-buttons button:hover {
+            filter: brightness(1.3);
         }
 
         .file-input-wrapper {
@@ -383,6 +399,14 @@ HTML_TEMPLATE = """
             </div>
             
             <div class="form-group">
+                <label for="paymentMethod">Payment Method</label>
+                <select id="paymentMethod" required>
+                    <option value="cash">Cash</option>
+                    <option value="upi">UPI</option>
+                </select>
+            </div>
+
+            <div class="form-group">
                 <label for="batchSelect">Batch</label>
                 <select id="batchSelect" required onchange="viewQueue()">
                     <option value="1">Batch 1</option>
@@ -399,33 +423,114 @@ HTML_TEMPLATE = """
 
         <div id="queueList"></div>
 
-        <div class="card">
-            <h2><i class="fas fa-lock"></i> Admin Controls</h2>
-            <div class="form-group">
-                <label for="adminPassword">Admin Password</label>
-                <div style="position: relative;">
-                    <input type="password" id="adminPassword" placeholder="Enter admin password">
-                    <i class="fas fa-eye password-toggle" 
-                       onclick="togglePasswordVisibility()" 
-                       style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer;"></i>
-                </div>
-            </div>
-            
-            <div class="button-group">
-                <button onclick="mergePrintQueue()">
-                    <i class="fas fa-file-pdf"></i> Merge and Download
-                </button>
-            </div>
+        
+    <div class="card">
+    <h2><i class="fas fa-lock"></i> Admin Controls</h2>
+    <div class="form-group">
+        <label for="adminPassword">Admin Password</label>
+        <div style="position: relative;">
+            <input type="password" id="adminPassword" placeholder="Enter admin password">
+            <i class="fas fa-eye password-toggle" 
+               onclick="togglePasswordVisibility()" 
+               style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer;"></i>
         </div>
     </div>
-            
+    
+    <div class="button-group">
+        <button onclick="mergePrintQueue()">
+            <i class="fas fa-file-pdf"></i> Merge and Download
+        </button>
+        <button onclick="viewDeleteRequests()">
+            <i class="fas fa-trash-alt"></i> View Delete Requests
+        </button>
+    </div>
+</div>
+
+<div id="deleteRequestsList"></div>
+
+<script>
+    async function viewDeleteRequests() {
+        const deleteRequestsList = document.getElementById('deleteRequestsList');
+        const password = document.getElementById('adminPassword').value;
+
+        if (!password) {
+            alert('Please enter admin password');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/admin/delete_requests?password=${encodeURIComponent(password)}`);
+
+            const requests = await response.json();
+
+            if (!response.ok) {
+                throw new Error(requests.error || 'Failed to fetch delete requests');
+            }
+
+            if (requests.length === 0) {
+                deleteRequestsList.innerHTML = `<p>No pending delete requests</p>`;
+                return;
+            }
+
+            let requestsHTML = `<div class="card"><h2><i class="fas fa-trash-alt"></i> Delete Requests</h2>`;
+
+            requests.forEach((request, index) => {
+                requestsHTML += `
+                    <div class="queue-item">
+                        <div style="display: flex; justify-content: space-between; align-items: start;">
+                            <strong>#${index + 1}</strong>
+                            <button onclick="approveDeleteRequest('${request._id}')" class="delete-btn">
+                                Approve
+                            </button>
+                        </div>
+                        <div class="queue-info">
+                            <div><i class="fas fa-file-alt"></i> ${request.item_id}</div>
+                            <div><i class="fas fa-clock"></i> ${request.requested_at}</div>
+                        </div>
+                    </div>`;
+            });
+
+            requestsHTML += '</div>';
+            deleteRequestsList.innerHTML = requestsHTML;
+
+        } catch (error) {
+            deleteRequestsList.innerHTML = `<p class="status error">Error: ${error.message}</p>`;
+        }
+    }
+
+    async function approveDeleteRequest(requestId) {
+        const password = document.getElementById('adminPassword').value;
+
+        if (!password) {
+            alert('Please enter admin password');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/admin/approve_delete/${requestId}?password=${encodeURIComponent(password)}`, {
+                method: 'POST'
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                alert(data.message || 'Delete request approved successfully');
+                viewDeleteRequests();
+            } else {
+                throw new Error(data.error || 'Approve delete request failed');
+            }
+        } catch (error) {
+            alert(`Error: ${error.message}`);
+        }
+    }
+</script>        
     <!-- Delete Confirmation Modal -->
     <div id="deleteModal" class="modal">
         <div class="modal-content">
             <h3>Confirm Deletion</h3>
             <p>Are you sure you want to delete this print job?</p>
             <div class="modal-buttons">
-                <button onclick="confirmDelete()" class="delete-btn">
+                <button onclick="requestDelete()" class="delete-btn">
                     <i class="fas fa-trash"></i> Delete
                 </button>
                 <button onclick="closeModal()" style="background-color: #6b7280;">
@@ -434,17 +539,17 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-    <divstyle="width:800px;">
-    <footer class="footer">
-        <div class="footer-content">
-            <a href="tel:7678023772"><i class="fas fa-phone"></i> +91 7678023772</a>
-            <a href="mailto:amanmishraaa767@gmail.com"><i class="fas fa-envelope"></i> amanmishraaa767@gmail.com</a>
-        </div>
-        <div class="copyright">
-            Copyright &copy; 2025 We Print For You. All rights reserved.
-        </div>
-    </footer> 
-    </div>   
+    <div style="width:800px;">
+        <footer class="footer">
+            <div class="footer-content">
+                <a href="tel:7678023772"><i class="fas fa-phone"></i> +91 7678023772</a>
+                <a href="mailto:amanmishraaa767@gmail.com"><i class="fas fa-envelope"></i> amanmishraaa767@gmail.com</a>
+            </div>
+            <div class="copyright">
+                Copyright &copy; 2025 We Print For You. All rights reserved.
+            </div>
+        </footer>
+    </div>
     <script>
         // File input handling
         document.getElementById('pdfFile').addEventListener('change', function(e) {
@@ -475,36 +580,36 @@ HTML_TEMPLATE = """
             document.getElementById('deleteModal').style.display = 'block';
         }
 
-        function closeModal() {
+                function closeModal() {
             document.getElementById('deleteModal').style.display = 'none';
             deleteItemId = null;
         }
 
-        async function confirmDelete() {
+        async function requestDelete() {
             if (!deleteItemId) return;
-            
+
             const status = document.getElementById('status');
             const batch = document.getElementById('batchSelect').value;
-            
+
             try {
-                const response = await fetch(`/delete/${deleteItemId}?batch=${batch}`, {
-                    method: 'DELETE'
+                const response = await fetch(`/request_delete/${deleteItemId}?batch=${batch}`, {
+                    method: 'POST'
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (response.ok) {
-                    status.textContent = data.message || 'Print job deleted successfully';
+                    status.textContent = data.message || 'Delete request submitted successfully';
                     status.className = 'status success';
                     viewQueue();
                 } else {
-                    throw new Error(data.error || 'Delete failed');
+                    throw new Error(data.error || 'Delete request failed');
                 }
             } catch (error) {
                 status.textContent = `Error: ${error.message}`;
                 status.className = 'status error';
             }
-            
+
             closeModal();
         }
 
@@ -514,8 +619,9 @@ HTML_TEMPLATE = """
             const pdfFile = document.getElementById('pdfFile').files[0];
             const copies = document.getElementById('copies').value;
             const batch = document.getElementById('batchSelect').value;
+            const paymentMethod = document.getElementById('paymentMethod').value;
 
-            if (!studentName || !pdfFile || !copies || !batch) {
+            if (!studentName || !pdfFile || !copies || !batch || !paymentMethod) {
                 status.textContent = 'Please fill in all fields';
                 status.className = 'status error';
                 return;
@@ -526,9 +632,17 @@ HTML_TEMPLATE = """
             formData.append('pdf', pdfFile);
             formData.append('copies', copies);
             formData.append('batch', batch);
+            formData.append('paymentMethod', paymentMethod);
+
+            if (paymentMethod === 'upi') {
+                const pageCount = await getPageCount(pdfFile);
+                const amount = pageCount * copies * 2;
+                const paymentUrl = `upi://pay?pa=7678023772@fam&pn=Print Service&am=${amount}&cu=INR`;
+                window.open(paymentUrl, '_blank');
+            }
 
             try {
-                status.textContent = 'Submitting print job...';
+                status.textContent = 'Validating and submitting print job...';
                 status.className = 'status';
 
                 const response = await fetch('/submit', {
@@ -539,13 +653,21 @@ HTML_TEMPLATE = """
                 const data = await response.json();
 
                 if (response.ok) {
-                    status.textContent = data.message || 'Print job submitted successfully';
+                    status.innerHTML = `
+                        <div>Print job submitted successfully!</div>
+                        <div style="font-size: 0.9em; margin-top: 8px;">
+                            File: ${data.details.filename}<br>
+                            Pages: ${data.details.pages}<br>
+                            Copies: ${data.details.copies}
+                        </div>
+                    `;
                     status.className = 'status success';
                     
                     // Clear form
                     document.getElementById('studentName').value = '';
                     document.getElementById('pdfFile').value = '';
                     document.getElementById('copies').value = '1';
+                    document.getElementById('paymentMethod').value = 'cash';
                     document.getElementById('fileInputButton').querySelector('p').textContent = 'Drop your PDF file here or click to browse';
                     
                     // Refresh queue
@@ -557,6 +679,22 @@ HTML_TEMPLATE = """
                 status.textContent = `Error: ${error.message}`;
                 status.className = 'status error';
             }
+        }
+
+        async function getPageCount(file) {
+            const reader = new FileReader();
+            return new Promise((resolve, reject) => {
+                reader.onload = function(event) {
+                    const pdfData = new Uint8Array(event.target.result);
+                    const loadingTask = pdfjsLib.getDocument({data: pdfData});
+                    loadingTask.promise.then(pdf => {
+                        resolve(pdf.numPages);
+                    }, reason => {
+                        reject(reason);
+                    });
+                };
+                reader.readAsArrayBuffer(file);
+            });
         }
 
         async function viewQueue() {
@@ -649,9 +787,9 @@ HTML_TEMPLATE = """
 
                         status.textContent = 'PDFs merged and downloaded successfully. Queue has been cleared.';
                         status.className = 'status success';
-                        
+
                         document.getElementById('adminPassword').value = '';
-                        
+
                         setTimeout(viewQueue, 1000);
                     } else {
                         throw new Error('Invalid response format');
@@ -718,10 +856,11 @@ def submit_print():
         name = request.form.get('name')
         copies = request.form.get('copies')
         batch = request.form.get('batch')
-        
-        if not all([name, copies, batch, file.filename]):
+        payment_method = request.form.get('paymentMethod')
+
+        if not all([name, copies, batch, file.filename, payment_method]):
             return jsonify({'error': 'Missing required fields'}), 400
-            
+
         try:
             copies = int(copies)
             batch = int(batch)
@@ -732,25 +871,49 @@ def submit_print():
 
         if not file.filename.lower().endswith('.pdf'):
             return jsonify({'error': 'Only PDF files are allowed'}), 400
-            
+
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe_filename = f"{timestamp}_{Path(file.filename).stem}.pdf"
         temp_path = TEMP_DIR / safe_filename
 
         try:
             file.save(str(temp_path))
-            
-            # Get page count
-            pdf_reader = PdfReader(str(temp_path))
-            page_count = len(pdf_reader.pages)
-            
+
+            # Validate PDF
+            try:
+                with open(str(temp_path), 'rb') as pdf_file:
+                    # Try to read the PDF to validate it
+                    pdf_reader = PdfReader(pdf_file)
+
+                    # Check if PDF has pages
+                    if len(pdf_reader.pages) == 0:
+                        raise ValueError("The PDF file has no pages")
+
+                    # Check if PDF is encrypted/password protected
+                    if pdf_reader.is_encrypted:
+                        raise ValueError("Password protected PDFs are not allowed")
+
+                    # Get page count for later use
+                    page_count = len(pdf_reader.pages)
+
+                    # Basic structure validation
+                    try:
+                        # Try to read first page
+                        pdf_reader.pages[0].extract_text()
+                    except Exception:
+                        raise ValueError("The PDF file appears to be corrupted or invalid")
+
+            except Exception as pdf_error:
+                return jsonify({'error': f'Invalid PDF file: {str(pdf_error)}'}), 400
+
+            # If validation passes, upload to Cloudinary
             upload_result = cloudinary.uploader.upload(
                 str(temp_path),
                 resource_type="raw",
                 folder="print_queue",
                 public_id=f"print_{timestamp}_{Path(file.filename).stem}"
             )
-            
+
             collection = batch1_collection if batch == 1 else batch2_collection
             document = {
                 'name': name,
@@ -759,19 +922,30 @@ def submit_print():
                 'public_id': upload_result['public_id'],
                 'copies': copies,
                 'page_count': page_count,
+                'payment_method': payment_method,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
             result = collection.insert_one(document)
             document['_id'] = str(result.inserted_id)
 
-            return jsonify({'message': 'Print request submitted successfully'}), 200
+            return jsonify({
+                'message': 'Print request submitted successfully',
+                'details': {
+                    'filename': file.filename,
+                    'pages': page_count,
+                    'copies': copies
+                }
+            }), 200
 
         except Exception as e:
             logger.error(f"Error processing file: {str(e)}")
-            return jsonify({'error': 'Error processing file'}), 500
+            return jsonify({'error': f'Error processing file: {str(e)}'}), 500
         finally:
             if temp_path.exists():
-                temp_path.unlink()
+                try:
+                    temp_path.unlink()
+                except Exception as e:
+                    logger.error(f"Error removing temporary file: {str(e)}")
 
     except Exception as e:
         logger.error(f"Submit print error: {str(e)}")
@@ -794,19 +968,19 @@ def view_queue():
 
         collection = batch1_collection if batch == 1 else batch2_collection
         queue = list(collection.find())
-        
+
         # Convert ObjectId to string for JSON serialization
         for item in queue:
             item['_id'] = str(item['_id'])
-            
+
         return jsonify(queue)
 
     except Exception as e:
         logger.error(f"View queue error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/delete/<item_id>', methods=['DELETE'])
-def delete_print_job(item_id):
+@app.route('/request_delete/<item_id>', methods=['POST'])
+def request_delete_print_job(item_id):
     try:
         batch = request.args.get('batch')
         if not batch:
@@ -820,7 +994,58 @@ def delete_print_job(item_id):
             return jsonify({'error': 'Invalid batch number'}), 400
 
         collection = batch1_collection if batch == 1 else batch2_collection
-        
+
+        # Find the document first to get its details
+        document = collection.find_one({'_id': ObjectId(item_id)})
+        if not document:
+            return jsonify({'error': 'Print job not found'}), 404
+
+        # Create a delete request
+        delete_request = {
+            'item_id': item_id,
+            'batch': batch,
+            'requested_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'status': 'pending'
+        }
+        delete_requests_collection.insert_one(delete_request)
+
+        return jsonify({'message': 'Delete request submitted successfully'}), 200
+
+    except Exception as e:
+        logger.error(f"Request delete print job error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/admin/delete_requests', methods=['GET'])
+def view_delete_requests():
+    try:
+        requests = list(delete_requests_collection.find({'status': 'pending'}))
+
+        # Convert ObjectId to string for JSON serialization
+        for request in requests:
+            request['_id'] = str(request['_id'])
+
+        return jsonify(requests)
+
+    except Exception as e:
+        logger.error(f"View delete requests error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/admin/approve_delete/<request_id>', methods=['POST'])
+def approve_delete_request(request_id):
+    try:
+        password = request.args.get('password', '')
+        if hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
+            return jsonify({'error': 'Invalid credentials'}), 403
+
+        delete_request = delete_requests_collection.find_one({'_id': ObjectId(request_id), 'status': 'pending'})
+        if not delete_request:
+            return jsonify({'error': 'Delete request not found'}), 404
+
+        item_id = delete_request['item_id']
+        batch = delete_request['batch']
+
+        collection = batch1_collection if batch == 1 else batch2_collection
+
         # Find the document first to get Cloudinary information
         document = collection.find_one({'_id': ObjectId(item_id)})
         if not document:
@@ -834,20 +1059,29 @@ def delete_print_job(item_id):
 
         # Delete from MongoDB
         result = collection.delete_one({'_id': ObjectId(item_id)})
-        
+
         if result.deleted_count == 0:
             return jsonify({'error': 'Print job not found'}), 404
+
+        # Mark the delete request as approved
+        delete_requests_collection.update_one(
+            {'_id': ObjectId(request_id)},
+            {'$set': {'status': 'approved', 'approved_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}
+        )
 
         return jsonify({'message': 'Print job deleted successfully'}), 200
 
     except Exception as e:
-        logger.error(f"Delete print job error: {str(e)}")
+        logger.error(f"Approve delete request error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/merge', methods=['POST'])
 def merge_queue():
     merge_dir = None
     try:
+        log_memory_usage()
+        logger.info("Starting PDF merge process")
+
         password = request.args.get('password', '')
         batch = request.args.get('batch')
 
@@ -870,47 +1104,85 @@ def merge_queue():
         merge_dir = Path(tempfile.mkdtemp(prefix='merge_', dir=TEMP_DIR))
         merger = PdfMerger()
         temp_files = []
+        failed_files = []
 
         try:
             for item in queue:
-                response = requests.get(item['cloudinary_url'], timeout=30)
-                response.raise_for_status()
-                
-                temp_path = merge_dir / f"temp_{Path(item['original_filename']).name}"
-                temp_files.append(temp_path)
-                
-                temp_path.write_bytes(response.content)
-                
-                for _ in range(item['copies']):
-                    merger.append(str(temp_path))
-
-            output_path = merge_dir / f'merged_batch_{batch}.pdf'
-            merger.write(str(output_path))
-            merger.close()
-
-            cleanup_success = True
-            for item in queue:
                 try:
-                    cloudinary.uploader.destroy(item['public_id'], resource_type="raw")
+                    response = requests.get(item['cloudinary_url'], timeout=30)
+                    response.raise_for_status()
+
+                    temp_path = merge_dir / f"temp_{Path(item['original_filename']).name}"
+                    temp_files.append(temp_path)
+
+                    temp_path.write_bytes(response.content)
+
+                    # Validate PDF before merging
+                    try:
+                        with open(str(temp_path), 'rb') as pdf_file:
+                            # Try to read the PDF to validate it
+                            pdf_reader = PdfReader(pdf_file)
+                            if pdf_reader.is_encrypted:
+                                raise ValueError(f"File {item['original_filename']} is password protected")
+
+                            # Try to read first page to verify PDF integrity
+                            pdf_reader.pages[0].extract_text()
+
+                            # If validation passes, append to merger
+                            for _ in range(item['copies']):
+                                merger.append(str(temp_path))
+                    except Exception as pdf_error:
+                        failed_files.append({
+                            'filename': item['original_filename'],
+                            'error': str(pdf_error)
+                        })
+                        logger.error(f"Error processing PDF {item['original_filename']}: {str(pdf_error)}")
+                        continue
+
                 except Exception as e:
-                    logger.error(f"Cloudinary cleanup error: {str(e)}")
+                    failed_files.append({
+                        'filename': item['original_filename'],
+                        'error': str(e)
+                    })
+                    logger.error(f"Error downloading/processing file: {str(e)}")
+                    continue
+
+            if not failed_files:
+                output_path = merge_dir / f'merged_batch_{batch}.pdf'
+                merger.write(str(output_path))
+                merger.close()
+
+                cleanup_success = True
+                for item in queue:
+                    try:
+                        cloudinary.uploader.destroy(item['public_id'], resource_type="raw")
+                    except Exception as e:
+                        logger.error(f"Cloudinary cleanup error: {str(e)}")
+                        cleanup_success = False
+
+                try:
+                    collection.delete_many({})
+                except Exception as e:
+                    logger.error(f"MongoDB cleanup error: {str(e)}")
                     cleanup_success = False
 
-            try:
-                collection.delete_many({})
-            except Exception as e:
-                logger.error(f"MongoDB cleanup error: {str(e)}")
-                cleanup_success = False
+                if not cleanup_success:
+                    logger.warning("Some cleanup operations failed, but proceeding with merge download")
 
-            if not cleanup_success:
-                logger.warning("Some cleanup operations failed, but proceeding with merge download")
+                log_memory_usage()
+                logger.info("Completed PDF merge process")
 
-            return send_file(
-                str(output_path),
-                mimetype='application/pdf',
-                as_attachment=True,
-                download_name=f'print_queue_batch{batch}_{datetime.now().strftime("%Y%m%d")}.pdf'
-            )
+                return send_file(
+                    str(output_path),
+                    mimetype='application/pdf',
+                    as_attachment=True,
+                    download_name=f'print_queue_batch{batch}_{datetime.now().strftime("%Y%m%d")}.pdf'
+                )
+            else:
+                error_message = "Failed to process the following files:\n"
+                for fail in failed_files:
+                    error_message += f"- {fail['filename']}: {fail['error']}\n"
+                return jsonify({'error': error_message}), 400
 
         finally:
             for temp_file in temp_files:
@@ -919,7 +1191,7 @@ def merge_queue():
                         temp_file.unlink()
                 except Exception as e:
                     logger.error(f"Error removing temp file {temp_file}: {str(e)}")
-            
+
             if merge_dir and merge_dir.exists():
                 try:
                     for file in merge_dir.glob('*'):
@@ -946,13 +1218,4 @@ def merge_queue():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    try:
-        TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        client.server_info()  
-        cloudinary.api.ping()  
-        port = int(os.environ.get('PORT', 5000))
-        logger.info(f"Starting server on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=True)
-    except Exception as e:
-        logger.error(f"Failed to start application: {str(e)}")
-        sys.exit(1)
+    app.run(debug=True)
