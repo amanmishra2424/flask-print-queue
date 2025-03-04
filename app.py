@@ -362,6 +362,21 @@ HTML_TEMPLATE = """
                 width: 100%;
             }
         }
+
+        /* Add to your existing style section */
+        .form-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 0.5rem;
+        }
+
+        .form-group a:hover {
+            text-decoration: underline;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -412,6 +427,18 @@ HTML_TEMPLATE = """
                     <option value="1">Batch 1</option>
                     <option value="2">Batch 2</option>
                 </select>
+            </div>
+            
+            <div class="form-group" style="margin-top: 1rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="checkbox" id="termsAccepted" required>
+                    <label for="termsAccepted" style="margin-bottom: 0;">
+                        I accept the 
+                        <a href="/terms" target="_blank" style="color: var(--primary-color);">Terms and Conditions</a>
+                        and
+                        <a href="/privacy" target="_blank" style="color: var(--primary-color);">Privacy Policy</a>
+                    </label>
+                </div>
             </div>
             
             <button onclick="submitPrint()">
@@ -1216,6 +1243,252 @@ def merge_queue():
             except Exception as cleanup_error:
                 logger.error(f"Error during cleanup: {str(cleanup_error)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/terms')
+def terms():
+    terms_content = """
+    <html>
+    <head>
+        <title>Terms and Conditions</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; }
+            h1 { color: #4f46e5; }
+            h2 { color: #4f46e5; margin-top: 20px; }
+            .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        </style>
+    </head>
+    <body>
+        <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms and Conditions</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            padding: 20px;
+            line-height: 1.6;
+            background-color: #f9f9f9;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        p {
+            margin-bottom: 10px;
+        }
+        ul {
+            margin-top: 5px;
+            padding-left: 20px;
+        }
+        strong {
+            display: block;
+            margin-top: 15px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Terms and Conditions</h1>
+        
+        <strong>1. Introduction</strong>
+        <p>Welcome to <a href="https://flask-print-queue.onrender.com/" target="_blank">https://flask-print-queue.onrender.com/</a> ("Website"). These Terms and Conditions ("Agreement") govern your use of the Website.</p>
+
+        <strong>2. Definitions</strong>
+        <ul>
+            <li><b>"User"</b> means any individual or entity accessing the Website.</li>
+            <li><b>"Content"</b> means any information, data, or materials available on the Website.</li>
+            <li><b>"Services"</b> means any print queue services offered through the Website.</li>
+        </ul>
+
+        <strong>3. Acceptance</strong>
+        <p>By using the Website, you agree to be bound by this Agreement. If you do not agree, please exit the Website.</p>
+
+        <strong>4. Intellectual Property</strong>
+        <ul>
+            <li>All Content on the Website is owned by the Website's owner or its licensors.</li>
+            <li>Users may not reproduce, distribute, or display any Content without prior written permission.</li>
+        </ul>
+
+        <strong>5. User Conduct</strong>
+        <ul>
+            <li>Users must not upload, post, or transmit any prohibited or unauthorized Content.</li>
+            <li>Users must not use the Website for any unlawful or unauthorized purposes.</li>
+        </ul>
+
+        <strong>6. Services</strong>
+        <ul>
+            <li>The Website offers print queue services for users.</li>
+            <li>Users are responsible for ensuring the accuracy and completeness of their print requests.</li>
+        </ul>
+
+        <strong>7. Disclaimer</strong>
+        <ul>
+            <li>The Website is provided on an "as-is" and "as-available" basis.</li>
+            <li>The Website's owner disclaims all warranties, express or implied, including fitness for a particular purpose.</li>
+        </ul>
+
+        <strong>8. Limitation of Liability</strong>
+        <p>The Website's owner shall not be liable for any damages, losses, or expenses arising from the use of the Website.</p>
+
+        <strong>9. Indemnification</strong>
+        <p>Users agree to indemnify and hold harmless the Website's owner and its affiliates from any claims, demands, or damages.</p>
+
+        <strong>10. Termination</strong>
+        <p>The Website's owner may terminate or suspend your access to the Website at any time without notice.</p>
+
+        <strong>11. Governing Law</strong>
+        <p>This Agreement shall be governed by and construed in accordance with the laws of India.</p>
+
+        <strong>12. Changes to this Agreement</strong>
+        <p>The Website's owner reserves the right to modify this Agreement at any time without notice.</p>
+
+        <strong>13. Contact Us</strong>
+        <p>If you have any questions or concerns, please contact us.</p>
+
+        <strong>Website Owner:</strong>
+        <p>This website is managed by <b>AMAN KUMAR KADECHANDRA MISHRA</b>.</p>
+
+        <strong>No Refund & No Replacement Policy</strong>
+        <p>No refunds or replacements will be provided for services used on this Website.</p>
+
+        <p>By using <a href="https://flask-print-queue.onrender.com/" target="_blank">https://flask-print-queue.onrender.com/</a>, you acknowledge that you have read, understood, and agree to be bo
+
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(terms_content)
+
+@app.route('/privacy')
+def privacy():
+    privacy_content = """
+    <html>
+    <head>
+        <title>Privacy Policy</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; }
+            h1 { color: #4f46e5; }
+            h2 { color: #4f46e5; margin-top: 20px; }
+            .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            padding: 20px;
+            line-height: 1.6;
+            background-color: #f9f9f9;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        ul {
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Privacy Policy</h1>
+        <p>At <a href="https://flask-print-queue.onrender.com/" target="_blank">https://flask-print-queue.onrender.com/</a> ("Website"), we are committed to protecting your personal information and ensuring that your privacy is respected.</p>
+
+        <h2>1. Introduction</h2>
+        <p>This Privacy Policy explains how we collect, use, and protect your personal information when you visit our Website.</p>
+
+        <h2>2. Collection of Personal Information</h2>
+        <p>We may collect the following types of personal information:</p>
+        <ul>
+            <li>Name</li>
+            <li>Email address</li>
+            <li>IP address</li>
+            <li>Browser type and version</li>
+            <li>Operating system</li>
+            <li>Print request information (e.g., document contents, print settings)</li>
+        </ul>
+
+        <h2>3. Use of Personal Information</h2>
+        <p>We use your personal information for the following purposes:</p>
+        <ul>
+            <li>To process and fulfill print requests</li>
+            <li>To communicate with you</li>
+            <li>To analyze Website usage and performance</li>
+            <li>To improve our services</li>
+        </ul>
+
+        <h2>4. Protection of Personal Information</h2>
+        <p>We implement reasonable security measures to protect your personal information from unauthorized access, disclosure, or destruction.</p>
+
+        <h2>5. Sharing of Personal Information</h2>
+        <p>We may share your personal information with:</p>
+        <ul>
+            <li>Our affiliates and subsidiaries</li>
+            <li>Third-party service providers (e.g., print services)</li>
+            <li>Law enforcement agencies (if required by law)</li>
+        </ul>
+
+        <h2>6. Cookies and Tracking Technologies</h2>
+        <p>We use cookies and tracking technologies to collect information about your Website usage and preferences.</p>
+
+        <h2>7. Your Rights</h2>
+        <p>You have the right to:</p>
+        <ul>
+            <li>Access and correct your personal information</li>
+            <li>Opt-out of receiving marketing communications</li>
+            <li>Request deletion of your personal information</li>
+        </ul>
+
+        <h2>8. Data Retention</h2>
+        <p>We retain your personal information for as long as necessary to fulfill the purposes outlined in this Privacy Policy.</p>
+
+        <h2>9. Changes to this Privacy Policy</h2>
+        <p>We reserve the right to modify this Privacy Policy at any time, without notice.</p>
+
+        <h2>10. Contact Us</h2>
+        <p>If you have any questions or concerns, please contact us.</p>
+
+        <p>By using our Website, you acknowledge that you have read, understood, and agree to be bound by this Privacy Policy.</p>
+    </div>
+
+</body>
+</html>
+.]
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(privacy_content)
 
 if __name__ == '__main__':
     app.run(debug=True)
