@@ -1,4 +1,5 @@
-from flask import Flask, request, send_file, jsonify, render_template_string
+import ssl
+from flask import Flask, request, send_file, jsonify, render_template_string, session, redirect, url_for
 from flask_cors import CORS
 from PyPDF2 import PdfMerger, PdfReader
 from bson import ObjectId
@@ -6,9 +7,6 @@ import os
 import hashlib
 import requests
 from datetime import datetime
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
 from pymongo import MongoClient
 import tempfile
 from pathlib import Path
@@ -16,12 +14,43 @@ import logging
 import sys
 import psutil
 import json
+from flask_bcrypt import Bcrypt
+import asyncio
+import aiohttp
+import certifi
+import concurrent.futures
+import aiofiles
+import math
+from dotenv import load_dotenv
+from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+import random
+import base64
+import uuid
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+import shutil
+
+load_dotenv()
+
+# Update constants
+GITHUB_TOKEN="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"
+GITHUB_REPO = "amanmishra2424/printstorage"
+GITHUB_API_URL = "https://api.github.com"
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB max file size
+ALLOWED_EXTENSIONS = {'pdf'}
+MAX_CONCURRENT_DOWNLOADS = 5  # Define this constant for async downloads
+
+# PhonePe keys
+PHONEPE_MERCHANT_ID = "PGTESTPAYUAT143"
+PHONEPE_SALT_KEY = "ab3ab177-b468-4791-8071-275c404d8ab0"
+PHONEPE_SALT_INDEX = 1
+PHONEPE_API_URL = "https://api-preprod.phonepe.com/apis/pg-sandbox"  # Use production URL in production
 
 def log_memory_usage():
     """Log current memory usage"""
     process = psutil.Process(os.getpid())
-    memory_info = process.memory_info()
-    logger.info(f"Memory usage - RSS: {memory_info.rss / 1024 / 1024:.2f} MB, VMS: {memory_info.vms / 1024 / 1024:.2f} MB")
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -31,17 +60,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'A@2424'
 CORS(app)
+bcrypt = Bcrypt(app)
 
-try:
-    cloudinary.config(
-        cloud_name='disht9nbk',
-        api_key='587297388865477',
-        api_secret='44JUq6ZcveKznDxyXT7OT4GyoTs'
-    )
-except Exception as e:
-    logger.error(f"Cloudinary configuration error: {str(e)}")
-    raise
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'  # Replace with your SMTP server
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'amankumar050804@gmail.com'  # Replace with your email
+app.config['MAIL_PASSWORD'] = 'kxqeipaqzwpohbmk'  # Replace with your email password
+app.config['MAIL_DEFAULT_SENDER'] = 'amankumar050804@gmail.com'  # Replace with your email
+
+mail = Mail(app)
+
+serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+
+def validate_batch(batch):
+    try:
+        batch = int(batch)
+    except ValueError:
+        return jsonify({'error': 'Invalid batch number'}), 400
+    return batch
 
 def get_mongodb_connection():
     try:
@@ -56,12 +95,20 @@ def get_mongodb_connection():
 try:
     client = get_mongodb_connection()
     db = client['print_queue_db']
+    users_collection = db['users']
     batch1_collection = db['batch1_queue']
     batch2_collection = db['batch2_queue']
-    delete_requests_collection = db['delete_requests']
+    payment_requests_collection = db['payment_requests']
+    phonepe_payments_collection = db['phonepe_payments']  # New collection for phonepe payments
 except Exception as e:
     logger.error(f"Failed to initialize MongoDB: {str(e)}")
     raise
+
+# Update existing users to include pending_dues field
+users_collection.update_many(
+    {'pending_dues': {'$exists': False}},
+    {'$set': {'pending_dues': 0}}
+)
 
 TEMP_DIR = Path(tempfile.gettempdir()) / 'print_queue'
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,6 +119,7 @@ HTML_TEMPLATE = """
 <html>
 <head>
     <title>Print For You</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root {
@@ -91,7 +139,7 @@ HTML_TEMPLATE = """
             box-sizing: border-box;
         }
         .footer {
-            height: 100px;
+            height: auto;
             background-color: white;
             color: var(--primary-color);
             padding: 1.5rem;
@@ -101,6 +149,7 @@ HTML_TEMPLATE = """
             flex-direction: column;
             justify-content: center;
             gap: 0.5rem;
+            width: 100%;
         }
 
         .footer-content {
@@ -108,6 +157,7 @@ HTML_TEMPLATE = """
             justify-content: center;
             gap: 2rem;
             margin-bottom: 0.5rem;
+            flex-wrap: wrap;
         }
 
         .footer a {
@@ -138,12 +188,13 @@ HTML_TEMPLATE = """
             line-height: 1.6;
             background-color: #f9fafb;
             color: var(--text-color);
-            padding: 2rem;
+            padding: 1rem;
         }
 
         .container {
             max-width: 1000px;
             margin: 0 auto;
+            width: 100%;
         }
 
         .header {
@@ -155,9 +206,10 @@ HTML_TEMPLATE = """
         .card {
             background: white;
             border-radius: var(--border-radius);
-            padding: 2rem;
-            margin-bottom: 2rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
             box-shadow: var(--shadow);
+            width: 100%;
         }
 
         .card h2 {
@@ -198,6 +250,7 @@ HTML_TEMPLATE = """
             display: flex;
             gap: 1rem;
             margin-top: 1.5rem;
+            flex-wrap: wrap;
         }
 
         button {
@@ -262,7 +315,7 @@ HTML_TEMPLATE = """
 
         .queue-info {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 1rem;
             margin-top: 0.5rem;
         }
@@ -351,7 +404,7 @@ HTML_TEMPLATE = """
 
         @media (max-width: 768px) {
             body {
-                padding: 1rem;
+                padding: 0.5rem;
             }
 
             .button-group {
@@ -361,21 +414,124 @@ HTML_TEMPLATE = """
             button {
                 width: 100%;
             }
+            
+            .card {
+                padding: 1rem;
+            }
         }
 
-        /* Add to your existing style section */
-        .form-group input[type="checkbox"] {
-            width: auto;
-            margin-right: 0.5rem;
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            overflow-x: auto;
+            display: block;
         }
 
-        .form-group a:hover {
-            text-decoration: underline;
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
         }
 
-        button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
+        th {
+            background-color: #f2f2f2;
+        }
+
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        
+        /* Payment confirmation modal */
+        #paymentConfirmModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+        
+        .payment-btn {
+            background-color: #22c55e;
+            margin-right: 10px;
+        }
+        
+        .payment-btn:hover {
+            background-color: #16a34a;
+        }
+        
+        .phonepe-payment-button {
+            background-color: #4f46e5;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        /* Dropdown styles */
+        .dropdown {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+        
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: white;
+            min-width: 160px;
+            box-shadow: var(--shadow);
+            z-index: 1;
+            border-radius: var(--border-radius);
+            width: 100%;
+        }
+        
+        .dropdown-content button {
+            width: 100%;
+            text-align: left;
+            padding: 12px 16px;
+            border: none;
+            background: none;
+            color: var(--text-color);
+            cursor: pointer;
+            border-radius: 0;
+        }
+        
+        .dropdown-content button:hover {
+            background-color: var(--secondary-color);
+        }
+        
+        .dropdown-button {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .show {
+            display: block;
+        }
+        
+        @media (min-width: 768px) {
+            table {
+                display: table;
+                overflow-x: initial;
+            }
+            
+            .dropdown {
+                width: auto;
+            }
+            
+            .dropdown-content {
+                width: auto;
+            }
         }
     </style>
 </head>
@@ -384,42 +540,184 @@ HTML_TEMPLATE = """
         <div class="header">
             <h1><i class="fas fa-print"></i> Welcome, We Print For you</h1>
         </div>
-        
+
+        {% if user %}
         <div class="card">
-            <h2><i class="fas fa-file-upload"></i> pricing per page 2rs</h2>
-            <h2><i class="fas fa-file-upload"></i> if 100 pages 1.5 rs per page</h2>
+            <h2><i class="fas fa-user"></i> Welcome, {{ user['name'] }}</h2>
+            <p>Your Pending Dues: ₹{{ pending_dues }}</p>
+            <button onclick="logout()">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+        </div>
+        {% elif admin %}
+        <div class="card">
+            <h2><i class="fas fa-user-shield"></i> Admin Panel</h2>
+            <button onclick="logout()">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+        </div>
+        {% else %}
+        <div class="card" id="loginCard">
+            <h2><i class="fas fa-sign-in-alt"></i> Login</h2>
             <div class="form-group">
-                <label for="studentName">Name</label>
-                <input type="text" id="studentName" placeholder="Enter your name" required>
+                <label for="email">Email</label>
+                <input type="email" id="email" placeholder="Enter your email" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="Enter your password" required>
+            </div>
+            <button onclick="login()">
+                <i class="fas fa-sign-in-alt"></i> Login
+            </button>
+            <div id="loginStatus" class="status"></div>
+            <p>Don't have an account? <a href="#" onclick="showRegisterCard()">Register</a></p>
+            <p>Admin? <a href="#" onclick="showAdminLoginCard()">Admin Login</a></p>
+            <p>Forgot your password? <a href="#" onclick="showForgotPasswordCard()">Forgot Password</a></p>
+        </div>
+
+        <div class="card" id="registerCard" style="display: none;">
+            <h2><i class="fas fa-user-plus"></i> Register</h2>
+            <div class="form-group">
+                <label for="registerName">Name</label>
+                <input type="text" id="registerName" placeholder="Enter your name" required>
+            </div>
+            <div class="form-group">
+                <label for="registerEmail">Email</label>
+                <input type="email" id="registerEmail" placeholder="Enter your email" required>
+            </div>
+            <div class="form-group">
+                <label for="registerPassword">Password</label>
+                <input type="password" id="registerPassword" placeholder="Enter your password" required>
+            </div>
+            <div class="form-group">
+                <label for="registerRollNo">Roll No</label>
+                <input type="text" id="registerRollNo" placeholder="Enter your roll no" required>
+            </div>
+            <div class="form-group">
+                <label for="registerBatch">Batch</label>
+                <select id="registerBatch" required>
+                    <option value="1">Batch 1</option>
+                    <option value="2">Batch 2</option>
+                </select>
+            </div>
+            <button onclick="register()">
+                <i class="fas fa-user-plus"></i> Register
+            </button>
+            <div id="registerStatus" class="status"></div>
+            <p>Already have an account? <a href="#" onclick="showLoginCard()">Login</a></p>
+        </div>
+
+        <div class="card" id="adminLoginCard" style="display: none;">
+            <h2><i class="fas fa-user-shield"></i> Admin Login</h2>
+            <div class="form-group">
+                <label for="adminEmail">Email</label>
+                <input type="email" id="adminEmail" placeholder="Enter admin email" required>
+            </div>
+            <div class="form-group">
+                <label for="adminPassword">Password</label>
+                <input type="password" id="adminPassword" placeholder="Enter admin password" required>
+            </div>
+            <button onclick="adminLogin()">
+                <i class="fas fa-sign-in-alt"></i> Login
+            </button>
+            <div id="adminLoginStatus" class="status"></div>
+            <p>Not an admin? <a href="#" onclick="showLoginCard()">User Login</a></p>
+        </div>
+
+        <div class="card" id="forgotPasswordCard" style="display: none;">
+            <h2><i class="fas fa-key"></i> Forgot Password</h2>
+            <div class="form-group">
+                <label for="forgotPasswordEmail">Email</label>
+                <input type="email" id="forgotPasswordEmail" placeholder="Enter your email" required>
+            </div>
+            <button onclick="forgotPassword()">
+                <i class="fas fa-paper-plane"></i> Send Reset Link
+            </button>
+            <div id="forgotPasswordStatus" class="status"></div>
+            <p>Remembered your password? <a href="#" onclick="showLoginCard()">Login</a></p>
+        </div>
+        {% endif %}
+
+        {% if admin %}
+        <div class="card">
+            <h2><i class="fas fa-lock"></i> Admin Controls</h2>
+            <div class="form-group">
+                <label for="adminBatchSelect">Select Batch</label>
+                <select id="adminBatchSelect" required>
+                    <option value="1">Batch 1</option>
+                    <option value="2">Batch 2</option>
+                </select>
             </div>
             
+            <!-- Admin dropdown menu -->
+            <div class="dropdown">
+                <button onclick="toggleAdminDropdown()" class="dropdown-button">
+                    <span><i class="fas fa-cog"></i> Admin Actions</span>
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+                <div id="adminDropdown" class="dropdown-content">
+                    <button onclick="mergePrintQueue()">
+                        <i class="fas fa-file-pdf"></i> Merge and Download
+                    </button>
+                    <button onclick="viewBilling()">
+                        <i class="fas fa-money-bill-wave"></i> View Billing
+                    </button>
+                    <button onclick="viewPaymentRequests()">
+                        <i class="fas fa-money-bill-wave"></i> View Payment Requests
+                    </button>
+                    <button onclick="viewAllQueues()">
+                        <i class="fas fa-list"></i> View All Queues
+                    </button>
+                </div>
+            </div>
+            
+            <div id="mergeStatus" class="status"></div>
+        </div>
+
+        <div class="card" id="billingCard" style="display: none;">
+            <h2><i class="fas fa-money-bill-wave"></i> Billing Information</h2>
+            <div id="billingInfo"></div>
+        </div>
+
+        <div class="card" id="paymentRequestsCard" style="display: none;">
+            <h2><i class="fas fa-money-bill-wave"></i> Payment Requests</h2>
+            <div id="paymentRequests"></div>
+        </div>
+        
+        <div class="card" id="allQueuesCard" style="display: none;">
+            <h2><i class="fas fa-list"></i> All Print Queues</h2>
+            <div id="allQueuesContent"></div>
+        </div>
+        {% endif %}
+
+        {% if user %}
+        <div class="card">
+            <h2><i class="fas fa-file-upload"></i> For Students</h2>
+            <div class="form-group">
+                <label for="studentName">Name</label>
+                <input type="text" id="studentName" placeholder="Enter your name" value="{{ user['name'] }}" required>
+            </div>
+
             <a href="https://smallpdf.com/word-to-pdf" class="convert-btn" target="_blank">
                 <button><i class="fas fa-file-pdf"></i> Word To Pdf</button>
             </a>
 
             <div class="form-group">
-                <label for="pdfFile">PDF File</label>
+                <label for="pdfFiles">PDF Files</label>
                 <div class="file-input-wrapper">
                     <div class="file-input-button" id="fileInputButton">
                         <i class="fas fa-cloud-upload-alt"></i>
-                        <p>Drop your PDF file here or click to browse</p>
+                        <p>Drop your PDF files here or click to browse</p>
                         <small>Only PDF files are accepted</small>
                     </div>
-                    <input type="file" id="pdfFile" accept=".pdf" required>
+                    <input type="file" id="pdfFiles" accept=".pdf" multiple required>
                 </div>
             </div>
-            
+
             <div class="form-group">
                 <label for="copies">Number of Copies</label>
                 <input type="number" id="copies" min="1" value="1" required>
-            </div>
-            
-            <div class="form-group">
-                <label for="paymentMethod">Payment Method</label>
-                <select id="paymentMethod" required>
-                    <option value="cash">Cash</option>
-                    <option value="upi">UPI</option>
-                </select>
             </div>
 
             <div class="form-group">
@@ -429,145 +727,64 @@ HTML_TEMPLATE = """
                     <option value="2">Batch 2</option>
                 </select>
             </div>
-            
-            <div class="form-group" style="margin-top: 1rem;">
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <input type="checkbox" id="termsAccepted" required>
-                    <label for="termsAccepted" style="margin-bottom: 0;">
-                        I accept the 
-                        <a href="/terms" target="_blank" style="color: var(--primary-color);">Terms and Conditions</a>
-                        and
-                        <a href="/privacy" target="_blank" style="color: var(--primary-color);">Privacy Policy</a>
-                    </label>
-                </div>
-            </div>
-            
+
             <button onclick="submitPrint()">
                 <i class="fas fa-paper-plane"></i> Submit Print Job
             </button>
-            
+
             <div id="status"></div>
         </div>
 
         <div id="queueList"></div>
+        {% endif %}
 
-        
-    <div class="card">
-    <h2><i class="fas fa-lock"></i> Admin Controls</h2>
-    <div class="form-group">
-        <label for="adminPassword">Admin Password</label>
-        <div style="position: relative;">
-            <input type="password" id="adminPassword" placeholder="Enter admin password">
-            <i class="fas fa-eye password-toggle" 
-               onclick="togglePasswordVisibility()" 
-               style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer;"></i>
-        </div>
-    </div>
-    
-    <div class="button-group">
-        <button onclick="mergePrintQueue()">
-            <i class="fas fa-file-pdf"></i> Merge and Download
-        </button>
-        <button onclick="viewDeleteRequests()">
-            <i class="fas fa-trash-alt"></i> View Delete Requests
-        </button>
-    </div>
-</div>
-
-<div id="deleteRequestsList"></div>
-
-<script>
-    async function viewDeleteRequests() {
-        const deleteRequestsList = document.getElementById('deleteRequestsList');
-        const password = document.getElementById('adminPassword').value;
-
-        if (!password) {
-            alert('Please enter admin password');
-            return;
-        }
-
-        try {
-            const response = await fetch(`/admin/delete_requests?password=${encodeURIComponent(password)}`);
-
-            const requests = await response.json();
-
-            if (!response.ok) {
-                throw new Error(requests.error || 'Failed to fetch delete requests');
-            }
-
-            if (requests.length === 0) {
-                deleteRequestsList.innerHTML = `<p>No pending delete requests</p>`;
-                return;
-            }
-
-            let requestsHTML = `<div class="card"><h2><i class="fas fa-trash-alt"></i> Delete Requests</h2>`;
-
-            requests.forEach((request, index) => {
-                requestsHTML += `
-                    <div class="queue-item">
-                        <div style="display: flex; justify-content: space-between; align-items: start;">
-                            <strong>#${index + 1}</strong>
-                            <button onclick="approveDeleteRequest('${request._id}')" class="delete-btn">
-                                Approve
-                            </button>
-                        </div>
-                        <div class="queue-info">
-                            <div><i class="fas fa-file-alt"></i> ${request.item_id}</div>
-                            <div><i class="fas fa-clock"></i> ${request.requested_at}</div>
-                        </div>
-                    </div>`;
-            });
-
-            requestsHTML += '</div>';
-            deleteRequestsList.innerHTML = requestsHTML;
-
-        } catch (error) {
-            deleteRequestsList.innerHTML = `<p class="status error">Error: ${error.message}</p>`;
-        }
-    }
-
-    async function approveDeleteRequest(requestId) {
-        const password = document.getElementById('adminPassword').value;
-
-        if (!password) {
-            alert('Please enter admin password');
-            return;
-        }
-
-        try {
-            const response = await fetch(`/admin/approve_delete/${requestId}?password=${encodeURIComponent(password)}`, {
-                method: 'POST'
-            });
-
-            const data = await response.json();
-
-            if (response.ok) {
-                alert(data.message || 'Delete request approved successfully');
-                viewDeleteRequests();
-            } else {
-                throw new Error(data.error || 'Approve delete request failed');
-            }
-        } catch (error) {
-            alert(`Error: ${error.message}`);
-        }
-    }
-</script>        
-    <!-- Delete Confirmation Modal -->
-    <div id="deleteModal" class="modal">
-        <div class="modal-content">
-            <h3>Confirm Deletion</h3>
-            <p>Are you sure you want to delete this print job?</p>
-            <div class="modal-buttons">
-                <button onclick="requestDelete()" class="delete-btn">
-                    <i class="fas fa-trash"></i> Delete
+        {% if user %}
+        <div class="card">
+            <h2><i class="fas fa-money-bill-wave"></i> Payment Options</h2>
+            <div class="form-group">
+                <label for="amountPaid">Amount Paid</label>
+                <input type="number" id="amountPaid" placeholder="Enter the amount" required>
+            </div>
+            <!-- Update payment button to only show PhonePe -->
+            <div class="button-group">
+                <button onclick="submitPaymentRequest()">
+                    <i class="fas fa-paper-plane"></i> Via Cash
                 </button>
-                <button onclick="closeModal()" style="background-color: #6b7280;">
-                    <i class="fas fa-times"></i> Cancel
+                <button onclick="showPhonePePayment()" class="payment-btn">
+                    <i class="fas fa-mobile-alt"></i> Pay via PhonePe
                 </button>
             </div>
+
+            <div id="paymentRequestStatus" class="status"></div>
         </div>
-    </div>
-    <div style="width:800px;">
+        {% endif %}
+
+        <div id="deleteModal" class="modal">
+            <div class="modal-content">
+                <h2>Confirm Delete</h2>
+                <p>Are you sure you want to delete this print job?</p>
+                <div class="modal-buttons">
+                    <button onclick="deletePrintJob()">Delete</button>
+                    <button onclick="closeModal()">Cancel</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Payment confirmation modal -->
+        <div id="paymentConfirmModal" class="modal">
+            <div class="modal-content">
+                <h2><i class="fas fa-money-bill-wave"></i> Payment Confirmation</h2>
+                <p id="paymentConfirmMessage"></p>
+                <div class="modal-buttons">
+                    <button onclick="initiatePhonePePayment()" class="payment-btn">Yes, Pay Now</button>
+                    <button onclick="closePaymentModal()">No, Later</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- PhonePe payment form container -->
+        <div id="phonepe-container"></div>
+        
         <footer class="footer">
             <div class="footer-content">
                 <a href="tel:7678023772"><i class="fas fa-phone"></i> +91 7678023772</a>
@@ -578,18 +795,21 @@ HTML_TEMPLATE = """
             </div>
         </footer>
     </div>
+
+    
     <script>
         // File input handling
-        document.getElementById('pdfFile').addEventListener('change', function(e) {
-            const fileName = e.target.files[0]?.name || 'No file selected';
-            document.getElementById('fileInputButton').querySelector('p').textContent = fileName;
+        document.getElementById('pdfFiles')?.addEventListener('change', function(e) {
+            const files = e.target.files;
+            const fileNames = Array.from(files).map(file => file.name).join(', ') || 'No files selected';
+            document.getElementById('fileInputButton').querySelector('p').textContent = fileNames;
         });
 
         // Toggle password visibility
         function togglePasswordVisibility() {
             const passwordInput = document.getElementById('adminPassword');
             const icon = document.querySelector('.password-toggle');
-            
+
             if (passwordInput.type === 'password') {
                 passwordInput.type = 'text';
                 icon.classList.remove('fa-eye');
@@ -600,36 +820,111 @@ HTML_TEMPLATE = """
                 icon.classList.add('fa-eye');
             }
         }
+        
+        // Admin dropdown toggle
+        function toggleAdminDropdown() {
+            document.getElementById("adminDropdown").classList.toggle("show");
+        }
+        
+        // Close dropdown when clicking outside
+        window.onclick = function(event) {
+            if (!event.target.matches('.dropdown-button') && !event.target.matches('.dropdown-button *')) {
+                const dropdowns = document.getElementsByClassName("dropdown-content");
+                for (let i = 0; i < dropdowns.length; i++) {
+                    const openDropdown = dropdowns[i];
+                    if (openDropdown.classList.contains('show')) {
+                        openDropdown.classList.remove('show');
+                    }
+                }
+            }
+        }
 
         let deleteItemId = null;
+        let pendingDuesAmount = {{ pending_dues if pending_dues else 0 }};
 
         function showDeleteModal(id) {
             deleteItemId = id;
             document.getElementById('deleteModal').style.display = 'block';
         }
 
-                function closeModal() {
+        function closeModal() {
             document.getElementById('deleteModal').style.display = 'none';
             deleteItemId = null;
         }
+        
+        function closePaymentModal() {
+            document.getElementById('paymentConfirmModal').style.display = 'none';
+        }
+        
+        function showPhonePePayment() {
+            if (pendingDuesAmount <= 0) {
+                alert("You don't have any pending dues to pay.");
+                return;
+            }
+            
+            const amountInput = document.getElementById('amountPaid');
+            const amount = parseFloat(amountInput.value);
+            
+            if (!amount || amount <= 0) {
+                alert("Please enter a valid amount to pay.");
+                return;
+            }
+            
+            if (amount > pendingDuesAmount) {
+                alert("The amount you entered is greater than your pending dues. Please enter a smaller amount.");
+                return;
+            }
+            
+            const paymentConfirmMessage = document.getElementById('paymentConfirmMessage');
+            paymentConfirmMessage.textContent = `Your total pending due is ₹${pendingDuesAmount}. Do you wish to pay ₹${amount} now?`;
+            document.getElementById('paymentConfirmModal').style.display = 'block';
+        }
+        
+        async function initiatePhonePePayment() {
+            closePaymentModal();
+            const amount = document.getElementById('amountPaid').value;
+            
+            try {
+                const response = await fetch('/create_phonepe_order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ amount: amount })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to create payment order');
+                }
+                
+                // Redirect to PhonePe payment page
+                window.location.href = data.payment_url;
+                
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
 
-        async function requestDelete() {
+        async function deletePrintJob() {
             if (!deleteItemId) return;
 
             const status = document.getElementById('status');
             const batch = document.getElementById('batchSelect').value;
 
             try {
-                const response = await fetch(`/request_delete/${deleteItemId}?batch=${batch}`, {
-                    method: 'POST'
+                const response = await fetch(`/delete_print_job/${deleteItemId}?batch=${batch}`, {
+                    method: 'DELETE'
                 });
 
                 const data = await response.json();
 
                 if (response.ok) {
-                    status.textContent = data.message || 'Delete request submitted successfully';
+                    status.textContent = data.message || 'Print job deleted successfully';
                     status.className = 'status success';
                     viewQueue();
+                    updatePendingDues(); // Update pending dues after deleting a print job
                 } else {
                     throw new Error(data.error || 'Delete request failed');
                 }
@@ -641,15 +936,28 @@ HTML_TEMPLATE = """
             closeModal();
         }
 
+        async function updatePendingDues() {
+            try {
+                const response = await fetch('/get_pending_dues');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    pendingDuesAmount = data.pending_dues;
+                    document.querySelector('p:contains("Your Pending Dues:")').textContent = `Your Pending Dues: ₹${pendingDuesAmount}`;
+                }
+            } catch (error) {
+                console.error('Error updating pending dues:', error);
+            }
+        }
+
         async function submitPrint() {
             const status = document.getElementById('status');
             const studentName = document.getElementById('studentName').value;
-            const pdfFile = document.getElementById('pdfFile').files[0];
+            const pdfFiles = document.getElementById('pdfFiles').files;
             const copies = document.getElementById('copies').value;
             const batch = document.getElementById('batchSelect').value;
-            const paymentMethod = document.getElementById('paymentMethod').value;
 
-            if (!studentName || !pdfFile || !copies || !batch || !paymentMethod) {
+            if (!studentName || pdfFiles.length === 0 || !copies || !batch) {
                 status.textContent = 'Please fill in all fields';
                 status.className = 'status error';
                 return;
@@ -657,17 +965,11 @@ HTML_TEMPLATE = """
 
             const formData = new FormData();
             formData.append('name', studentName);
-            formData.append('pdf', pdfFile);
+            for (let i = 0; i < pdfFiles.length; i++) {
+                formData.append('pdfs', pdfFiles[i]);
+            }
             formData.append('copies', copies);
             formData.append('batch', batch);
-            formData.append('paymentMethod', paymentMethod);
-
-            if (paymentMethod === 'upi') {
-                const pageCount = await getPageCount(pdfFile);
-                const amount = pageCount * copies * 2;
-                const paymentUrl = `upi://pay?pa=7678023772@fam&pn=Print Service&am=${amount}&cu=INR`;
-                window.open(paymentUrl, '_blank');
-            }
 
             try {
                 status.textContent = 'Validating and submitting print job...';
@@ -684,7 +986,7 @@ HTML_TEMPLATE = """
                     status.innerHTML = `
                         <div>Print job submitted successfully!</div>
                         <div style="font-size: 0.9em; margin-top: 8px;">
-                            File: ${data.details.filename}<br>
+                            Files: ${data.details.filenames.join(', ')}<br>
                             Pages: ${data.details.pages}<br>
                             Copies: ${data.details.copies}
                         </div>
@@ -693,13 +995,22 @@ HTML_TEMPLATE = """
                     
                     // Clear form
                     document.getElementById('studentName').value = '';
-                    document.getElementById('pdfFile').value = '';
+                    document.getElementById('pdfFiles').value = '';
                     document.getElementById('copies').value = '1';
-                    document.getElementById('paymentMethod').value = 'cash';
-                    document.getElementById('fileInputButton').querySelector('p').textContent = 'Drop your PDF file here or click to browse';
+                    document.getElementById('fileInputButton').querySelector('p').textContent = 'Drop your PDF files here or click to browse';
                     
                     // Refresh queue
                     viewQueue();
+                    
+                    // Update pending dues
+                    pendingDuesAmount = data.pending_dues;
+                    
+                    // Show payment confirmation if there are pending dues
+                    if (data.pending_dues > 0) {
+                        const paymentConfirmMessage = document.getElementById('paymentConfirmMessage');
+                        paymentConfirmMessage.textContent = `Your total pending due is ₹${data.pending_dues}. Do you wish to pay now?`;
+                        document.getElementById('paymentConfirmModal').style.display = 'block';
+                    }
                 } else {
                     throw new Error(data.error || 'Submission failed');
                 }
@@ -707,22 +1018,6 @@ HTML_TEMPLATE = """
                 status.textContent = `Error: ${error.message}`;
                 status.className = 'status error';
             }
-        }
-
-        async function getPageCount(file) {
-            const reader = new FileReader();
-            return new Promise((resolve, reject) => {
-                reader.onload = function(event) {
-                    const pdfData = new Uint8Array(event.target.result);
-                    const loadingTask = pdfjsLib.getDocument({data: pdfData});
-                    loadingTask.promise.then(pdf => {
-                        resolve(pdf.numPages);
-                    }, reason => {
-                        reject(reason);
-                    });
-                };
-                reader.readAsArrayBuffer(file);
-            });
         }
 
         async function viewQueue() {
@@ -740,15 +1035,15 @@ HTML_TEMPLATE = """
                 if (queue.length === 0) {
                     queueList.innerHTML = `
                         <div class="card">
-                            <h2><i class="fas fa-list"></i> Print Queue (Batch ${batch})</h2>
-                            <p>Queue is empty</p>
+                            <h2><i class="fas fa-list"></i> Your Print Queue (Batch ${batch})</h2>
+                            <p>Your queue is empty</p>
                         </div>`;
                     return;
                 }
 
                 let queueHTML = `
                     <div class="card">
-                        <h2><i class="fas fa-list"></i> Print Queue (Batch ${batch})</h2>`;
+                        <h2><i class="fas fa-list"></i> Your Print Queue (Batch ${batch})</h2>`;
 
                 queue.forEach((item, index) => {
                     queueHTML += `
@@ -775,19 +1070,20 @@ HTML_TEMPLATE = """
             } catch (error) {
                 queueList.innerHTML = `
                     <div class="card">
-                        <h2><i class="fas fa-list"></i> Print Queue (Batch ${batch})</h2>
+                        <h2><i class="fas fa-list"></i> Your Print Queue (Batch ${batch})</h2>
                         <div class="status error">Error: ${error.message}</div>
                     </div>`;
             }
         }
 
         async function mergePrintQueue() {
-            const status = document.getElementById('status');
-            const password = document.getElementById('adminPassword').value;
-            const batch = document.getElementById('batchSelect').value;
+            const status = document.getElementById('mergeStatus');
+            const batchSelect = document.getElementById('adminBatchSelect');
+            const password = prompt('Please enter admin password:');
+            const batch = batchSelect.value;
 
             if (!password) {
-                status.textContent = 'Please enter admin password';
+                status.textContent = 'Password is required';
                 status.className = 'status error';
                 return;
             }
@@ -796,35 +1092,70 @@ HTML_TEMPLATE = """
                 status.textContent = 'Merging PDFs...';
                 status.className = 'status';
 
-                const response = await fetch(`/merge?password=${encodeURIComponent(password)}&batch=${batch}`, {
+                const response = await fetch(`/merge?batch=${batch}&password=${encodeURIComponent(password)}`, {
                     method: 'POST'
                 });
 
-                if (response.ok) {
-                    const contentType = response.headers.get('content-type');
-                    if (contentType && contentType.includes('application/pdf')) {
-                        const blob = await response.blob();
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `print_queue_batch${batch}_${new Date().toISOString().split('T')[0]}.pdf`;
-                        document.body.appendChild(a);
-                        a.click();
-                        window.URL.revokeObjectURL(url);
-                        document.body.removeChild(a);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Merge failed');
+                }
 
-                        status.textContent = 'PDFs merged and downloaded successfully. Queue has been cleared.';
-                        status.className = 'status success';
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/pdf')) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `print_queue_batch${batch}_${new Date().toISOString().split('T')[0]}.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
 
-                        document.getElementById('adminPassword').value = '';
-
-                        setTimeout(viewQueue, 1000);
-                    } else {
-                        throw new Error('Invalid response format');
-                    }
+                    status.textContent = 'PDFs merged and downloaded successfully';
+                    status.className = 'status success';
                 } else {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Merge failed');
+                    throw new Error('Invalid response format');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+                console.error('Merge error:', error);
+            }
+        }
+
+        // User login
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const status = document.getElementById('loginStatus');
+
+            if (!email || !password) {
+                status.textContent = 'Please fill in all fields';
+                status.className = 'status error';
+                return;
+            }
+
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    status.textContent = 'Login successful';
+                    status.className = 'status success';
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } else {
+                    throw new Error(data.error || 'Login failed');
                 }
             } catch (error) {
                 status.textContent = `Error: ${error.message}`;
@@ -832,40 +1163,522 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Add auto-refresh functionality
-        function startQueueAutoRefresh() {
-            setInterval(viewQueue, 30000); // Refresh every 30 seconds
-        }
+        // Admin login
+        async function adminLogin() {
+            const email = document.getElementById('adminEmail').value;
+            const password = document.getElementById('adminPassword').value;
+            const status = document.getElementById('adminLoginStatus');
 
-        // Initialize auto-refresh when page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            viewQueue();
-            startQueueAutoRefresh();
-        });
+            if (!email || !password) {
+                status.textContent = 'Please fill in all fields';
+                status.className = 'status error';
+                return;
+            }
 
-        // Close modal when clicking outside
-        window.onclick = function(event) {
-            const modal = document.getElementById('deleteModal');
-            if (event.target === modal) {
-                closeModal();
+            try {
+                const response = await fetch('/admin_login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    status.textContent = 'Login successful';
+                    status.className = 'status success';
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                } else {
+                    throw new Error(data.error || 'Login failed');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
             }
         }
-        
+
+        // User registration
+        async function register() {
+            const name = document.getElementById('registerName').value;
+            const email = document.getElementById('registerEmail').value;
+            const password = document.getElementById('registerPassword').value;
+            const rollNo = document.getElementById('registerRollNo').value;
+            const batch = document.getElementById('registerBatch').value;
+            const status = document.getElementById('registerStatus');
+
+            if (!name || !email || !password || !rollNo || !batch) {
+                status.textContent = 'Please fill in all fields';
+                status.className = 'status error';
+                return;
+            }
+
+            status.textContent = 'Please wait, sending mail...';
+            status.className = 'status';
+
+            try {
+                const response = await fetch('/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name, email, password, rollNo, batch })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    status.textContent = data.message || 'Registration successful. Please check your email for the OTP to confirm your address.';
+                    status.className = 'status success';
+                    setTimeout(() => {
+                        showOtpCard();
+                    }, 1000);
+                } else {
+                    throw new Error(data.error || 'Registration failed');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+            }
+        }
+
+        // Show register card
+        function showRegisterCard() {
+            document.getElementById('loginCard').style.display = 'none';
+            document.getElementById('registerCard').style.display = 'block';
+        }
+
+        // Show login card
+        function showLoginCard() {
+            document.getElementById('registerCard').style.display = 'none';
+            document.getElementById('otpCard').style.display = 'none';
+            document.getElementById('forgotPasswordCard').style.display = 'none';
+            document.getElementById('adminLoginCard').style.display = 'none';
+            document.getElementById('loginCard').style.display = 'block';
+        }
+
+        // Show admin login card
+        function showAdminLoginCard() {
+            document.getElementById('loginCard').style.display = 'none';
+            document.getElementById('adminLoginCard').style.display = 'block';
+        }
+
+        // Show forgot password card
+        function showForgotPasswordCard() {
+            document.getElementById('loginCard').style.display = 'none';
+            document.getElementById('forgotPasswordCard').style.display = 'block';
+        }
+
+        async function forgotPassword() {
+            const email = document.getElementById('forgotPasswordEmail').value;
+            const status = document.getElementById('forgotPasswordStatus');
+
+            if (!email) {
+                status.textContent = 'Email is required';
+                status.className = 'status error';
+                return;
+            }
+
+            try {
+                const response = await fetch('/forgot_password', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    status.textContent = data.message || 'Password reset email sent';
+                    status.className = 'status success';
+                } else {
+                    throw new Error(data.error || 'Password reset request failed');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            if (document.getElementById('queueList')) {
+                viewQueue();
+            }
+        });
+
+        async function viewBilling() {
+            const billingCard = document.getElementById('billingCard');
+            const billingInfo = document.getElementById('billingInfo');
+
+            try {
+                const response = await fetch('/billing');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch billing information');
+                }
+
+                let billingHTML = `
+                    <div class="bg-white p-8 rounded-lg shadow mb-8">
+                        <h2 class="text-2xl font-bold text-indigo-600 mb-4"><i class="fas fa-money-bill-wave"></i> Batch 1 Billing</h2>
+                        <table class="table-auto w-full">
+                            <thead>
+                                <tr>
+                                    <th class="px-4 py-2">Name</th>
+                                    <th class="px-4 py-2">Email</th>
+                                    <th class="px-4 py-2">Pending Dues (₹)</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+                data.batch1.users.forEach((user) => {
+                    billingHTML += `
+                                <tr class="bg-gray-100">
+                                    <td class="border px-4 py-2">${user.name}</td>
+                                    <td class="border px-4 py-2">${user.email}</td>
+                                    <td class="border px-4 py-2">₹${user.pending_dues}</td>
+                                </tr>`;
+                });
+
+                billingHTML += `
+                            </tbody>
+                            <tfoot>
+                                <tr class="bg-gray-200">
+                                    <td colspan="2" class="border px-4 py-2 font-bold">Total Batch 1 Dues</td>
+                                    <td class="border px-4 py-2 font-bold">₹${data.batch1.total_dues}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                    
+                    <div class="bg-white p-8 rounded-lg shadow mb-8">
+                        <h2 class="text-2xl font-bold text-indigo-600 mb-4"><i class="fas fa-money-bill-wave"></i> Batch 2 Billing</h2>
+                        <table class="table-auto w-full">
+                            <thead>
+                                <tr>
+                                    <th class="px-4 py-2">Name</th>
+                                    <th class="px-4 py-2">Email</th>
+                                    <th class="px-4 py-2">Pending Dues (₹)</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+                data.batch2.users.forEach((user) => {
+                    billingHTML += `
+                                <tr class="bg-gray-100">
+                                    <td class="border px-4 py-2">${user.name}</td>
+                                    <td class="border px-4 py-2">${user.email}</td>
+                                    <td class="border px-4 py-2">₹${user.pending_dues}</td>
+                                </tr>`;
+                });
+
+                billingHTML += `
+                            </tbody>
+                            <tfoot>
+                                <tr class="bg-gray-200">
+                                    <td colspan="2" class="border px-4 py-2 font-bold">Total Batch 2 Dues</td>
+                                    <td class="border px-4 py-2 font-bold">₹${data.batch2.total_dues}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>`;
+
+                billingInfo.innerHTML = billingHTML;
+                billingCard.style.display = 'block';
+
+            } catch (error) {
+                billingInfo.innerHTML = `
+                    <div class="bg-white p-8 rounded-lg shadow mb-8">
+                        <h2 class="text-2xl font-bold text-indigo-600 mb-4"><i class="fas fa-money-bill-wave"></i> Billing Information</h2>
+                        <div class="bg-red-100 text-red-600 p-4 rounded-lg">Error: ${error.message}</div>
+                    </div>`;
+                billingCard.style.display = 'block';
+            }
+        }
+
+        async function submitPaymentRequest() {
+            const amountPaid = document.getElementById('amountPaid').value;
+            const status = document.getElementById('paymentRequestStatus');
+
+            if (!amountPaid) {
+                status.textContent = 'Please enter the amount you paid';
+                status.className = 'status error';
+                return;
+            }
+
+            try {
+                const response = await fetch('/submit_payment_request', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ amount_paid: amountPaid })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    status.textContent = data.message || 'Payment request submitted successfully';
+                    status.className = 'status success';
+                } else {
+                    throw new Error(data.error || 'Submission failed');
+                }
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                status.className = 'status error';
+            }
+        }
+
+        async function viewPaymentRequests() {
+            const paymentRequestsCard = document.getElementById('paymentRequestsCard');
+            const paymentRequestsDiv = document.getElementById('paymentRequests');
+
+            try {
+                const response = await fetch('/view_payment_requests');
+                const requests = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(requests.error || 'Failed to fetch payment requests');
+                }
+
+                let paymentRequestsHTML = '<h2>Payment Requests</h2><table><thead><tr><th>User</th><th>Amount Paid</th><th>Action</th></tr></thead><tbody>';
+
+                requests.forEach(request => {
+                    paymentRequestsHTML += `
+                    <tr>
+                        <td>${request.user_name} (${request.user_email})</td>
+                        <td>${request.amount_paid}</td>
+                        <td><button onclick="approvePaymentRequest('${request._id}')">Approve</button></td>
+                    </tr>`;
+                });
+
+                paymentRequestsHTML += '</tbody></table>';
+                paymentRequestsDiv.innerHTML = paymentRequestsHTML;
+                paymentRequestsCard.style.display = 'block';
+
+            } catch (error) {
+                paymentRequestsDiv.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
+                paymentRequestsCard.style.display = 'block';
+            }
+        }
+
+        async function approvePaymentRequest(requestId) {
+            try {
+                const response = await fetch(`/approve_payment_request/${requestId}`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message || 'Payment request approved successfully');
+                    viewPaymentRequests();
+                } else {
+                    throw new Error(data.error || 'Approval failed');
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            if (document.getElementById('paymentRequests')) {
+                viewPaymentRequests();
+            }
+        });
+
+        // Logout function
+        async function logout() {
+            try {
+                const response = await fetch('/logout', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message || 'Logout successful');
+                    window.location.reload();
+                } else {
+                    throw new Error(data.error || 'Logout failed');
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        async function viewAllQueues() {
+            const allQueuesCard = document.getElementById('allQueuesCard');
+            const allQueuesContent = document.getElementById('allQueuesContent');
+
+            try {
+                const response = await fetch('/admin/all-queues');
+                const queues = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(queues.error || 'Failed to fetch queues');
+                }
+
+                let html = '';
+                
+                // Batch 1 Queue
+                html += `<h3>Batch 1 Queue</h3>`;
+                if (queues.batch1.length === 0) {
+                    html += `<p>No print jobs in Batch 1</p>`;
+                } else {
+                    queues.batch1.forEach((item, index) => {
+                        html += createQueueItemHTML(item, index, 1);
+                    });
+                }
+
+                // Batch 2 Queue
+                html += `<h3>Batch 2 Queue</h3>`;
+                if (queues.batch2.length === 0) {
+                    html += `<p>No print jobs in Batch 2</p>`;
+                } else {
+                    queues.batch2.forEach((item, index) => {
+                        html += createQueueItemHTML(item, index, 2);
+                    });
+                }
+
+                allQueuesContent.innerHTML = html;
+                allQueuesCard.style.display = 'block';
+
+            } catch (error) {
+                allQueuesContent.innerHTML = `<div class="status error">Error: ${error.message}</div>`;
+                allQueuesCard.style.display = 'block';
+            }
+        }
+
+        function createQueueItemHTML(item, index, batch) {
+            return `
+                <div class="queue-item">
+                    <div style="display: flex; justify-content: space-between; align-items: start;">
+                        <strong>Batch ${batch} - #${index + 1}</strong>
+                        <button onclick="showDeleteModal('${item._id}')" class="delete-btn">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                    <div class="queue-info">
+                        <div><i class="fas fa-user"></i> ${item.name}</div>
+                        <div><i class="fas fa-file-pdf"></i> ${item.original_filename}</div>
+                        <div><i class="fas fa-copy"></i> ${item.copies} copies</div>
+                        <div><i class="fas fa-file-alt"></i> ${item.page_count} pages</div>
+                        <div><i class="fas fa-clock"></i> ${item.timestamp}</div>
+                    </div>
+                </div>`;
+        }
     </script>
-        
 </body>
 </html>
+
+<!-- Add OTP verification form in your HTML template -->
+<div class="card" id="otpCard" style="display: none;">
+    <h2><i class="fas fa-key"></i> Verify OTP</h2>
+    <div class="form-group">
+        <label for="otpEmail">Email</label>
+        <input type="email" id="otpEmail" placeholder="Enter your email" required>
+    </div>
+    <div class="form-group">
+        <label for="otp">OTP</label>
+        <input type="text" id="otp" placeholder="Enter the OTP" required>
+    </div>
+    <button onclick="verifyOtp()">
+        <i class="fas fa-check"></i> Verify OTP
+    </button>
+    <div id="otpStatus" class="status"></div>
+</div>
+
+<script>
+    async function verifyOtp() {
+        const email = document.getElementById('otpEmail').value;
+        const otp = document.getElementById('otp').value;
+        const status = document.getElementById('otpStatus');
+
+        if (!email || !otp) {
+            status.textContent = 'Please fill in all fields';
+            status.className = 'status error';
+            return;
+        }
+
+        try {
+            const response = await fetch('/verify_otp', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ email, otp })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                status.textContent = data.message || 'Email confirmed successfully!';
+                status.className = 'status success';
+                clearTimeout(otpTimer);
+                setTimeout(() => {
+                    showLoginCard();
+                }, 1000);
+            } else {
+                throw new Error(data.error || 'OTP verification failed');
+            }
+        } catch (error) {
+            status.textContent = `Error: ${error.message}`;
+            status.className = 'status error';
+        }
+    }
+
+    function startOtpTimer() {
+        const status = document.getElementById('otpStatus');
+        let timeLeft = 300; // 5 minutes in seconds
+
+        otpTimer = setInterval(() => {
+            if (timeLeft <= 0) {
+                clearInterval(otpTimer);
+                status.textContent = 'OTP expired. Please request a new OTP.';
+                status.className = 'status error';
+            } else {
+                const minutes = Math.floor(timeLeft / 60);
+                const seconds = timeLeft % 60;
+                status.textContent = `Time left: ${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+                status.className = 'status';
+                timeLeft--;
+            }
+        }, 1000);
+    }
+
+    // Show OTP card and start timer
+    function showOtpCard() {
+        document.getElementById('registerCard').style.display = 'none';
+        document.getElementById('otpCard').style.display = 'block';
+        startOtpTimer();
+    }
+</script>
 """
 
 @app.route('/')
 def index():
+    if 'user' in session:
+        user = session['user']
+        user_data = users_collection.find_one({'email': user['email']})
+        pending_dues = user_data.get('pending_dues', 0)
+        return render_template_string(HTML_TEMPLATE, pending_dues=pending_dues, user=user)
+    elif 'admin' in session:
+        return render_template_string(HTML_TEMPLATE, admin=session['admin'])
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/health')
+@app.route('/health', methods=['GET', 'POST'])  # Correct for multiple methods
 def health_check():
     try:
         client.server_info()
-        cloudinary.api.ping()
         test_file = TEMP_DIR / 'health_check.txt'
         test_file.write_text('test')
         test_file.unlink()
@@ -874,19 +1687,117 @@ def health_check():
         logger.error(f"Health check failed: {str(e)}")
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
 
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({'error': 'Email and password are required'}), 400
+
+    user = users_collection.find_one({'email': email})
+
+    if not user or not bcrypt.check_password_hash(user['password'], password):
+        return jsonify({'error': 'Invalid credentials'}), 403
+
+    if not user.get('email_confirmed'):
+        return jsonify({'error': 'Email address not confirmed. Please check your email.'}), 403
+
+    session['user'] = {
+        'name': user['name'],
+        'email': user['email'],
+        'role': user['role'],
+        'batch': user['batch']
+    }
+    return jsonify({'message': 'Login successful'}), 200
+
+
+
+@app.route('/admin_login', methods=['POST'])
+def admin_login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    if email != 'mishraaman2424@gmail.com' or hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
+        return jsonify({'error': 'Invalid credentials'}), 403
+
+    session['admin'] = {
+        'name': 'admin',
+        'email': email,
+        'role': 'admin',
+        'batch': 1
+    }
+    return jsonify({'message': 'Login successful'}), 200
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+    rollNo = data.get('rollNo')
+    batch = data.get('batch')
+
+    if not name or not email or not password or not rollNo or not batch:
+        return jsonify({'error': 'All fields are required'}), 400
+
+    if users_collection.find_one({'email': email}):
+        return jsonify({'error': 'Email already registered'}), 400
+
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    otp = generate_otp()
+    user = {
+        'name': name,
+        'email': email,
+        'password': hashed_password,
+        'rollNo': rollNo,
+        'batch': int(batch),
+        'role': 'user',
+        'pending_dues': 0,
+        'email_confirmed': False,
+        'otp': otp  # Store OTP
+    }
+    users_collection.insert_one(user)
+    send_verification_email(name, email, otp)  # Pass the user's name, email, and OTP
+
+    return jsonify({'message': 'Registration successful. Please check your email for the OTP to confirm your address.'}), 200
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user', None)
+    session.pop('admin', None)
+    return jsonify({'message': 'Logout successful'}), 200
+
+@app.route('/get_pending_dues', methods=['GET'])
+def get_pending_dues():
+    if 'user' not in session:
+        return jsonify({'error': 'Unauthorized'}), 403
+        
+    user = users_collection.find_one({'email': session['user']['email']})
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+        
+    return jsonify({'pending_dues': user.get('pending_dues', 0)}), 200
+
 @app.route('/submit', methods=['POST'])
 def submit_print():
     try:
-        if 'pdf' not in request.files:
-            return jsonify({'error': 'No file uploaded'}), 400
+        logger.info("Starting file upload process")
+        if 'pdfs' not in request.files:
+            return jsonify({'error': 'No files uploaded'}), 400
 
-        file = request.files['pdf']
-        name = request.form.get('name')
+        if 'user' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        files = request.files.getlist('pdfs')
+        logger.info(f"Files received: {[file.filename for file in files]}")
+        name = session['user']['name']
         copies = request.form.get('copies')
-        batch = request.form.get('batch')
-        payment_method = request.form.get('paymentMethod')
+        batch = session['user']['batch']
 
-        if not all([name, copies, batch, file.filename, payment_method]):
+        if not all([name, copies, batch, files]):
             return jsonify({'error': 'Missing required fields'}), 400
 
         try:
@@ -897,83 +1808,97 @@ def submit_print():
         except ValueError:
             return jsonify({'error': 'Invalid copies or batch value'}), 400
 
-        if not file.filename.lower().endswith('.pdf'):
-            return jsonify({'error': 'Only PDF files are allowed'}), 400
+        filenames = []
+        total_pages = 0
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        safe_filename = f"{timestamp}_{Path(file.filename).stem}.pdf"
-        temp_path = TEMP_DIR / safe_filename
+        for file in files:
+            if not file.filename.lower().endswith('.pdf'):
+                return jsonify({'error': 'Only PDF files are allowed'}), 400
 
-        try:
-            file.save(str(temp_path))
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            safe_filename = f"{timestamp}_{Path(file.filename).stem}.pdf"
+            temp_path = TEMP_DIR / safe_filename
 
-            # Validate PDF
             try:
-                with open(str(temp_path), 'rb') as pdf_file:
-                    # Try to read the PDF to validate it
-                    pdf_reader = PdfReader(pdf_file)
+                file.save(str(temp_path))
+                logger.info(f"File saved to temp path: {temp_path}")
 
-                    # Check if PDF has pages
-                    if len(pdf_reader.pages) == 0:
-                        raise ValueError("The PDF file has no pages")
-
-                    # Check if PDF is encrypted/password protected
-                    if pdf_reader.is_encrypted:
-                        raise ValueError("Password protected PDFs are not allowed")
-
-                    # Get page count for later use
-                    page_count = len(pdf_reader.pages)
-
-                    # Basic structure validation
-                    try:
-                        # Try to read first page
-                        pdf_reader.pages[0].extract_text()
-                    except Exception:
-                        raise ValueError("The PDF file appears to be corrupted or invalid")
-
-            except Exception as pdf_error:
-                return jsonify({'error': f'Invalid PDF file: {str(pdf_error)}'}), 400
-
-            # If validation passes, upload to Cloudinary
-            upload_result = cloudinary.uploader.upload(
-                str(temp_path),
-                resource_type="raw",
-                folder="print_queue",
-                public_id=f"print_{timestamp}_{Path(file.filename).stem}"
-            )
-
-            collection = batch1_collection if batch == 1 else batch2_collection
-            document = {
-                'name': name,
-                'original_filename': file.filename,
-                'cloudinary_url': upload_result['secure_url'],
-                'public_id': upload_result['public_id'],
-                'copies': copies,
-                'page_count': page_count,
-                'payment_method': payment_method,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            result = collection.insert_one(document)
-            document['_id'] = str(result.inserted_id)
-
-            return jsonify({
-                'message': 'Print request submitted successfully',
-                'details': {
-                    'filename': file.filename,
-                    'pages': page_count,
-                    'copies': copies
-                }
-            }), 200
-
-        except Exception as e:
-            logger.error(f"Error processing file: {str(e)}")
-            return jsonify({'error': f'Error processing file: {str(e)}'}), 500
-        finally:
-            if temp_path.exists():
+                # Validate PDF
                 try:
-                    temp_path.unlink()
-                except Exception as e:
-                    logger.error(f"Error removing temporary file: {str(e)}")
+                    with open(str(temp_path), 'rb') as pdf_file:
+                        pdf_reader = PdfReader(pdf_file)
+
+                        if len(pdf_reader.pages) == 0:
+                            raise ValueError("The PDF file has no pages")
+
+                        if pdf_reader.is_encrypted:
+                            raise ValueError("Password protected PDFs are not allowed")
+
+                        page_count = len(pdf_reader.pages)
+
+                        try:
+                            pdf_reader.pages[0].extract_text()
+                        except Exception:
+                            raise ValueError("The PDF file appears to be corrupted or invalid")
+
+                except Exception as pdf_error:
+                    return jsonify({'error': f'Invalid PDF file: {str(pdf_error)}'}), 400
+
+                try:
+                    logger.info("Uploading to GitHub...")
+                    upload_result = upload_to_github(str(temp_path), safe_filename)
+                    logger.info(f"Upload successful. URL: {upload_result['url']}")
+
+                    document = {
+                        'name': name,
+                        'original_filename': file.filename,
+                        'github_url': upload_result['url'],
+                        'release_id': upload_result['id'],
+                        'copies': copies,
+                        'page_count': page_count,
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'status': 'pending'
+                    }
+
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"GitHub API error: {str(e)}")
+                    return jsonify({'error': 'Failed to upload file'}), 500
+
+                collection = batch1_collection if batch == 1 else batch2_collection
+                result = collection.insert_one(document)
+                document['_id'] = str(result.inserted_id)
+
+                filenames.append(file.filename)
+                total_pages += page_count
+
+            except Exception as e:
+                logger.error(f"Error processing file: {str(e)}")
+                return jsonify({'error': f'Error processing file: {str(e)}'}), 500
+            finally:
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except Exception as e:
+                        logger.error(f"Error removing temporary file: {str(e)}")
+
+        total_cost = total_pages * copies * 2
+        users_collection.update_one(
+            {'email': session['user']['email']},
+            {'$inc': {'pending_dues': total_cost}}
+        )
+
+        user = users_collection.find_one({'email': session['user']['email']})
+        pending_dues = user.get('pending_dues', 0)
+
+        return jsonify({
+            'message': 'Print request submitted successfully',
+            'details': {
+                'filenames': filenames,
+                'pages': total_pages,
+                'copies': copies
+            },
+            'pending_dues': pending_dues
+        }), 200
 
     except Exception as e:
         logger.error(f"Submit print error: {str(e)}")
@@ -982,8 +1907,10 @@ def submit_print():
 @app.route('/queue', methods=['GET'])
 def view_queue():
     try:
-        batch = request.args.get('batch')
+        if 'user' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
 
+        batch = request.args.get('batch')
         if not batch:
             return jsonify({'error': 'Batch number is required'}), 400
 
@@ -995,7 +1922,9 @@ def view_queue():
             return jsonify({'error': 'Invalid batch number'}), 400
 
         collection = batch1_collection if batch == 1 else batch2_collection
-        queue = list(collection.find())
+        
+        # Only fetch queue items for the current user
+        queue = list(collection.find({'name': session['user']['name']}))
 
         # Convert ObjectId to string for JSON serialization
         for item in queue:
@@ -1007,10 +1936,11 @@ def view_queue():
         logger.error(f"View queue error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/request_delete/<item_id>', methods=['POST'])
-def request_delete_print_job(item_id):
+@app.route('/delete_print_job/<item_id>', methods=['DELETE'])
+def delete_print_job(item_id):
     try:
         batch = request.args.get('batch')
+        
         if not batch:
             return jsonify({'error': 'Batch number is required'}), 400
 
@@ -1023,67 +1953,19 @@ def request_delete_print_job(item_id):
 
         collection = batch1_collection if batch == 1 else batch2_collection
 
-        # Find the document first to get its details
+        # Check if user is logged in
+        if 'user' not in session and 'admin' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        # Find the document first
         document = collection.find_one({'_id': ObjectId(item_id)})
         if not document:
             return jsonify({'error': 'Print job not found'}), 404
 
-        # Create a delete request
-        delete_request = {
-            'item_id': item_id,
-            'batch': batch,
-            'requested_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'status': 'pending'
-        }
-        delete_requests_collection.insert_one(delete_request)
-
-        return jsonify({'message': 'Delete request submitted successfully'}), 200
-
-    except Exception as e:
-        logger.error(f"Request delete print job error: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/admin/delete_requests', methods=['GET'])
-def view_delete_requests():
-    try:
-        requests = list(delete_requests_collection.find({'status': 'pending'}))
-
-        # Convert ObjectId to string for JSON serialization
-        for request in requests:
-            request['_id'] = str(request['_id'])
-
-        return jsonify(requests)
-
-    except Exception as e:
-        logger.error(f"View delete requests error: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@app.route('/admin/approve_delete/<request_id>', methods=['POST'])
-def approve_delete_request(request_id):
-    try:
-        password = request.args.get('password', '')
-        if hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
-            return jsonify({'error': 'Invalid credentials'}), 403
-
-        delete_request = delete_requests_collection.find_one({'_id': ObjectId(request_id), 'status': 'pending'})
-        if not delete_request:
-            return jsonify({'error': 'Delete request not found'}), 404
-
-        item_id = delete_request['item_id']
-        batch = delete_request['batch']
-
-        collection = batch1_collection if batch == 1 else batch2_collection
-
-        # Find the document first to get Cloudinary information
-        document = collection.find_one({'_id': ObjectId(item_id)})
-        if not document:
-            return jsonify({'error': 'Print job not found'}), 404
-
-        # Delete from Cloudinary
-        try:
-            cloudinary.uploader.destroy(document['public_id'], resource_type="raw")
-        except Exception as e:
-            logger.error(f"Error deleting from Cloudinary: {str(e)}")
+        # Check authorization
+        if 'admin' not in session:  # If not admin, check if user owns the document
+            if 'user' not in session or document['name'] != session['user']['name']:
+                return jsonify({'error': 'Not authorized to delete this print job'}), 403
 
         # Delete from MongoDB
         result = collection.delete_one({'_id': ObjectId(item_id)})
@@ -1091,30 +1973,67 @@ def approve_delete_request(request_id):
         if result.deleted_count == 0:
             return jsonify({'error': 'Print job not found'}), 404
 
-        # Mark the delete request as approved
-        delete_requests_collection.update_one(
-            {'_id': ObjectId(request_id)},
-            {'$set': {'status': 'approved', 'approved_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}
-        )
+        # Adjust user's pending dues
+        total_pages = document['page_count'] * document['copies']
+        total_cost = total_pages * 2
+        
+        # If it's a user deleting their own job, update their dues
+        if 'user' in session:
+            users_collection.update_one(
+                {'email': session['user']['email']},
+                {'$inc': {'pending_dues': -total_cost}}
+            )
+        # If it's an admin deleting a job, update the job owner's dues
+        elif 'admin' in session:
+            user = users_collection.find_one({'name': document['name']})
+            if user:
+                users_collection.update_one(
+                    {'_id': user['_id']},
+                    {'$inc': {'pending_dues': -total_cost}}
+                )
+
+        # Delete from GitHub
+        try:
+            delete_from_github(document['release_id'])
+        except Exception as e:
+            logger.error(f"Error deleting from GitHub: {str(e)}")
 
         return jsonify({'message': 'Print job deleted successfully'}), 200
 
     except Exception as e:
-        logger.error(f"Approve delete request error: {str(e)}")
+        logger.error(f"Delete print job error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
+
+async def download_file(session, url, path):
+    """Optimized file download with chunked transfer"""
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    connector = aiohttp.TCPConnector(ssl=ssl_context, limit=MAX_CONCURRENT_DOWNLOADS)
+    timeout = aiohttp.ClientTimeout(total=300)  # 5 minutes timeout
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            async with aiofiles.open(path, 'wb') as f:
+                chunk_size = 64 * 1024  # 64KB chunks
+                while True:
+                    chunk = await response.content.read(chunk_size)
+                    if not chunk:
+                        break
+                    await f.write(chunk)
 
 @app.route('/merge', methods=['POST'])
 def merge_queue():
     merge_dir = None
+    
     try:
-        log_memory_usage()
-        logger.info("Starting PDF merge process")
-
-        password = request.args.get('password', '')
         batch = request.args.get('batch')
-
-        if not batch or hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
-            return jsonify({'error': 'Invalid credentials'}), 403
+        password = request.args.get('password')
+        
+        if not batch:
+            return jsonify({'error': 'Batch number is required'}), 400
+            
+        if not password or hashlib.sha256(password.encode()).hexdigest() != ADMIN_PASSWORD:
+            return jsonify({'error': 'Invalid admin password'}), 403
 
         try:
             batch = int(batch)
@@ -1130,368 +2049,917 @@ def merge_queue():
             return jsonify({'error': 'Queue is empty'}), 404
 
         merge_dir = Path(tempfile.mkdtemp(prefix='merge_', dir=TEMP_DIR))
-        merger = PdfMerger()
-        temp_files = []
-        failed_files = []
+        merger = PdfMerger(strict=False)
+        files_merged = False
+        successful_merges = []
+        errors = []
 
-        try:
-            for item in queue:
-                try:
-                    response = requests.get(item['cloudinary_url'], timeout=30)
-                    response.raise_for_status()
+        # Process each file in the queue
+        for item in queue:
+            try:
+                temp_path = merge_dir / f"temp_{item['original_filename']}"
+                logger.info(f"Downloading {item['github_url']}")
+                
+                # Download file with authentication
+                response = download_from_github(item['github_url'])
+                
+                with open(temp_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
 
-                    temp_path = merge_dir / f"temp_{Path(item['original_filename']).name}"
-                    temp_files.append(temp_path)
+                # Validate and merge PDF
+                with open(temp_path, 'rb') as pdf_file:
+                    reader = PdfReader(pdf_file)
+                    if len(reader.pages) > 0:
+                        for _ in range(item['copies']):  # Append the file multiple times based on copies
+                            merger.append(temp_path)
+                        files_merged = True
+                        successful_merges.append(item)
+                        logger.info(f"Successfully processed {item['original_filename']}")
+                    else:
+                        errors.append(f"Empty PDF: {item['original_filename']}")
 
-                    temp_path.write_bytes(response.content)
-
-                    # Validate PDF before merging
+            except Exception as e:
+                errors.append(f"Error processing {item['original_filename']}: {str(e)}")
+                logger.error(f"Error processing file: {str(e)}")
+            finally:
+                if temp_path.exists():
                     try:
-                        with open(str(temp_path), 'rb') as pdf_file:
-                            # Try to read the PDF to validate it
-                            pdf_reader = PdfReader(pdf_file)
-                            if pdf_reader.is_encrypted:
-                                raise ValueError(f"File {item['original_filename']} is password protected")
-
-                            # Try to read first page to verify PDF integrity
-                            pdf_reader.pages[0].extract_text()
-
-                            # If validation passes, append to merger
-                            for _ in range(item['copies']):
-                                merger.append(str(temp_path))
-                    except Exception as pdf_error:
-                        failed_files.append({
-                            'filename': item['original_filename'],
-                            'error': str(pdf_error)
-                        })
-                        logger.error(f"Error processing PDF {item['original_filename']}: {str(pdf_error)}")
-                        continue
-
-                except Exception as e:
-                    failed_files.append({
-                        'filename': item['original_filename'],
-                        'error': str(e)
-                    })
-                    logger.error(f"Error downloading/processing file: {str(e)}")
-                    continue
-
-            if not failed_files:
-                output_path = merge_dir / f'merged_batch_{batch}.pdf'
-                merger.write(str(output_path))
-                merger.close()
-
-                cleanup_success = True
-                for item in queue:
-                    try:
-                        cloudinary.uploader.destroy(item['public_id'], resource_type="raw")
+                        temp_path.unlink()
                     except Exception as e:
-                        logger.error(f"Cloudinary cleanup error: {str(e)}")
-                        cleanup_success = False
+                        logger.error(f"Error removing temporary file: {str(e)}")
 
-                try:
-                    collection.delete_many({})
-                except Exception as e:
-                    logger.error(f"MongoDB cleanup error: {str(e)}")
-                    cleanup_success = False
+        if not files_merged:
+            error_msg = "No valid PDFs to merge. Errors: " + "; ".join(errors)
+            logger.error(error_msg)
+            return jsonify({'error': error_msg}), 400
 
-                if not cleanup_success:
-                    logger.warning("Some cleanup operations failed, but proceeding with merge download")
+        # Create merged PDF
+        output_path = merge_dir / f'merged_batch_{batch}.pdf'
+        merger.write(str(output_path))
+        merger.close()
 
-                log_memory_usage()
-                logger.info("Completed PDF merge process")
+        # Clean up successful merges
+        for item in successful_merges:
+            try:
+                delete_url = f"{GITHUB_API_URL}/repos/{GITHUB_REPO}/releases/{item['release_id']}"
+                headers = {
+                    "Authorization": f"token {GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+                requests.delete(delete_url, headers=headers)
+                collection.delete_one({'_id': item['_id']})
+            except Exception as e:
+                logger.error(f"Cleanup error for {item['original_filename']}: {str(e)}")
 
-                return send_file(
-                    str(output_path),
-                    mimetype='application/pdf',
-                    as_attachment=True,
-                    download_name=f'print_queue_batch{batch}_{datetime.now().strftime("%Y%m%d")}.pdf'
-                )
-            else:
-                error_message = "Failed to process the following files:\n"
-                for fail in failed_files:
-                    error_message += f"- {fail['filename']}: {fail['error']}\n"
-                return jsonify({'error': error_message}), 400
-
-        finally:
-            for temp_file in temp_files:
-                try:
-                    if temp_file.exists():
-                        temp_file.unlink()
-                except Exception as e:
-                    logger.error(f"Error removing temp file {temp_file}: {str(e)}")
-
-            if merge_dir and merge_dir.exists():
-                try:
-                    for file in merge_dir.glob('*'):
-                        try:
-                            file.unlink()
-                        except Exception as e:
-                            logger.error(f"Error removing file in merge dir: {str(e)}")
-                    merge_dir.rmdir()
-                except Exception as e:
-                    logger.error(f"Error removing merge directory: {str(e)}")
+        return send_file(
+            str(output_path),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'print_queue_batch{batch}_{datetime.now().strftime("%Y%m%d")}.pdf'
+        )
 
     except Exception as e:
         logger.error(f"Merge queue error: {str(e)}")
-        if merge_dir and merge_dir.exists():
-            try:
-                for file in merge_dir.glob('*'):
-                    try:
-                        file.unlink()
-                    except Exception:
-                        pass
-                merge_dir.rmdir()
-            except Exception as cleanup_error:
-                logger.error(f"Error during cleanup: {str(cleanup_error)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/terms')
-def terms():
-    terms_content = """
-    <html>
-    <head>
-        <title>Terms and Conditions</title>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; }
-            h1 { color: #4f46e5; }
-            h2 { color: #4f46e5; margin-top: 20px; }
-            .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        </style>
-    </head>
-    <body>
-        <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Terms and Conditions</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 40px;
-            padding: 20px;
-            line-height: 1.6;
-            background-color: #f9f9f9;
-        }
-        .container {
-            max-width: 800px;
-            margin: auto;
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }
-        h1, h2 {
-            color: #333;
-        }
-        p {
-            margin-bottom: 10px;
-        }
-        ul {
-            margin-top: 5px;
-            padding-left: 20px;
-        }
-        strong {
-            display: block;
-            margin-top: 15px;
-            font-size: 18px;
-        }
-    </style>
-</head>
-<body>
+    finally:
+        if merge_dir and merge_dir.exists():
+            try:
+                shutil.rmtree(merge_dir)
+            except Exception as e:
+                logger.error(f"Cleanup error: {str(e)}")
 
-    <div class="container">
-        <h1>Terms and Conditions</h1>
+@app.route('/verify_otp', methods=['POST'])
+def verify_otp():
+    data = request.get_json()
+    email = data.get('email')
+    otp = data.get('otp')
+
+    if not email or not otp:
+        return jsonify({'error': 'Email and OTP are required'}), 400
+
+    user = users_collection.find_one({'email': email})
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    if user['otp'] == otp:
+        users_collection.update_one({'email': email}, {'$set': {'email_confirmed': True}, '$unset': {'otp': ""}})
+        return jsonify({'message': 'Email confirmed successfully!'}), 200
+    else:
+        return jsonify({'error': 'Invalid OTP'}), 400
         
-        <strong>1. Introduction</strong>
-        <p>Welcome to <a href="https://flask-print-queue.onrender.com/" target="_blank">https://flask-print-queue.onrender.com/</a> ("Website"). These Terms and Conditions ("Agreement") govern your use of the Website.</p>
+@app.route('/pending_dues', methods=['GET'])
+def pending_dues():
+    try:
+        if 'admin' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
 
-        <strong>2. Definitions</strong>
-        <ul>
-            <li><b>"User"</b> means any individual or entity accessing the Website.</li>
-            <li><b>"Content"</b> means any information, data, or materials available on the Website.</li>
-            <li><b>"Services"</b> means any print queue services offered through the Website.</li>
-        </ul>
+        # Get all users
+        users = list(users_collection.find({'role': 'user'}))
+        
+        # Separate users by batch
+        batch1_users = []
+        batch2_users = []
+        
+        for user in users:
+            # Use the stored pending dues value
+            user_dues = {
+                'name': user['name'],
+                'email': user['email'],
+                'pending_dues': user['pending_dues']
+            }
+            
+            if user.get('batch') == 1:
+                batch1_users.append(user_dues)
+            else:
+                batch2_users.append(user_dues)
 
-        <strong>3. Acceptance</strong>
-        <p>By using the Website, you agree to be bound by this Agreement. If you do not agree, please exit the Website.</p>
+        # Calculate total dues for each batch
+        total_batch1_dues = sum(user['pending_dues'] for user in batch1_users)
+        total_batch2_dues = sum(user['pending_dues'] for user in batch2_users)
 
-        <strong>4. Intellectual Property</strong>
-        <ul>
-            <li>All Content on the Website is owned by the Website's owner or its licensors.</li>
-            <li>Users may not reproduce, distribute, or display any Content without prior written permission.</li>
-        </ul>
+        return jsonify({
+            'batch1': {
+                'users': batch1_users,
+                'total_dues': total_batch1_dues
+            },
+            'batch2': {
+                'users': batch2_users,
+                'total_dues': total_batch2_dues
+            }
+        })
 
-        <strong>5. User Conduct</strong>
-        <ul>
-            <li>Users must not upload, post, or transmit any prohibited or unauthorized Content.</li>
-            <li>Users must not use the Website for any unlawful or unauthorized purposes.</li>
-        </ul>
+    except Exception as e:
+        logger.error(f"Pending dues error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
-        <strong>6. Services</strong>
-        <ul>
-            <li>The Website offers print queue services for users.</li>
-            <li>Users are responsible for ensuring the accuracy and completeness of their print requests.</li>
-        </ul>
+@app.route('/billing', methods=['GET'])
+def billing():
+    try:
+        if 'admin' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
 
-        <strong>7. Disclaimer</strong>
-        <ul>
-            <li>The Website is provided on an "as-is" and "as-available" basis.</li>
-            <li>The Website's owner disclaims all warranties, express or implied, including fitness for a particular purpose.</li>
-        </ul>
+        # Get all users
+        users = list(users_collection.find({'role': 'user'}))
+        
+        # Separate users by batch
+        batch1_users = []
+        batch2_users = []
+        
+        for user in users:
+            # Use the stored pending dues value
+            user_dues = {
+                'name': user['name'],
+                'email': user['email'],
+                'pending_dues': user['pending_dues']
+            }
+            
+            if user.get('batch') == 1:
+                batch1_users.append(user_dues)
+            else:
+                batch2_users.append(user_dues)
 
-        <strong>8. Limitation of Liability</strong>
-        <p>The Website's owner shall not be liable for any damages, losses, or expenses arising from the use of the Website.</p>
+        # Calculate total dues for each batch
+        total_batch1_dues = sum(user['pending_dues'] for user in batch1_users)
+        total_batch2_dues = sum(user['pending_dues'] for user in batch2_users)
 
-        <strong>9. Indemnification</strong>
-        <p>Users agree to indemnify and hold harmless the Website's owner and its affiliates from any claims, demands, or damages.</p>
+        return jsonify({
+            'batch1': {
+                'users': batch1_users,
+                'total_dues': total_batch1_dues
+            },
+            'batch2': {
+                'users': batch2_users,
+                'total_dues': total_batch2_dues
+            }
+        })
 
-        <strong>10. Termination</strong>
-        <p>The Website's owner may terminate or suspend your access to the Website at any time without notice.</p>
+    except Exception as e:
+        logger.error(f"Billing error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
-        <strong>11. Governing Law</strong>
-        <p>This Agreement shall be governed by and construed in accordance with the laws of India.</p>
+@app.route('/submit_payment_request', methods=['POST'])
+def submit_payment_request():
+    try:
+        if 'user' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
 
-        <strong>12. Changes to this Agreement</strong>
-        <p>The Website's owner reserves the right to modify this Agreement at any time without notice.</p>
+        data = request.get_json()
+        amount_paid = data.get('amount_paid')
 
-        <strong>13. Contact Us</strong>
-        <p>If you have any questions or concerns, please contact us.</p>
+        if not amount_paid:
+            return jsonify({'error': 'Amount paid is required'}), 400
 
-        <strong>Website Owner:</strong>
-        <p>This website is managed by <b>AMAN KUMAR KADECHANDRA MISHRA</b>.</p>
+        try:
+            amount_paid = float(amount_paid)
+            if amount_paid <= 0:
+                raise ValueError
+        except ValueError:
+            return jsonify({'error': 'Invalid amount'}), 400
 
-        <strong>No Refund & No Replacement Policy</strong>
-        <p>No refunds or replacements will be provided for services used on this Website.</p>
+        payment_request = {
+            'user_email': session['user']['email'],
+            'user_name': session['user']['name'],
+            'amount_paid': amount_paid,
+            'status': 'pending',
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        payment_requests_collection.insert_one(payment_request)
 
-        <p>By using <a href="https://flask-print-queue.onrender.com/" target="_blank">https://flask-print-queue.onrender.com/</a>, you acknowledge that you have read, understood, and agree to be bo
+        return jsonify({'message': 'Payment request submitted successfully'}), 200
 
-        </div>
-    </body>
-    </html>
-    """
-    return render_template_string(terms_content)
+    except Exception as e:
+        logger.error(f"Submit payment request error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
-@app.route('/privacy')
-def privacy():
-    privacy_content = """
+@app.route('/view_payment_requests', methods=['GET'])
+def view_payment_requests():
+    try:
+        if 'admin' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        payment_requests = list(payment_requests_collection.find({'status': 'pending'}))
+
+        # Convert ObjectId to string for JSON serialization
+        for request in payment_requests:
+            request['_id'] = str(request['_id'])
+
+        return jsonify(payment_requests)
+
+    except Exception as e:
+        logger.error(f"View payment requests error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/approve_payment_request/<request_id>', methods=['POST'])
+def approve_payment_request(request_id):
+    try:
+        if 'admin' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        payment_request = payment_requests_collection.find_one({'_id': ObjectId(request_id)})
+
+        if not payment_request:
+            return jsonify({'error': 'Payment request not found'}), 404
+
+        if payment_request['status'] != 'pending':
+            return jsonify({'error': 'Payment request already processed'}), 400
+
+        # Update user's pending dues
+        users_collection.update_one(
+            {'email': payment_request['user_email']},
+            {'$inc': {'pending_dues': -payment_request['amount_paid']}}
+        )
+
+        # Update payment request status
+        payment_requests_collection.update_one(
+            {'_id': ObjectId(request_id)},
+            {'$set': {'status': 'approved'}}
+        )
+
+        return jsonify({'message': 'Payment request approved successfully'}), 200
+
+    except Exception as e:
+        logger.error(f"Approve payment request error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# Add GitHub upload function
+def upload_to_github(file_path, filename):
+    """Upload file to GitHub releases for public repository"""
+    try:
+        # Use token authentication for public repo
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",  # Note: using 'token' instead of 'Bearer'
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        # Generate unique tag name
+        tag_name = f"pdf-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        
+        # Create release data
+        release_data = {
+            "tag_name": tag_name,
+            "name": filename,
+            "body": "Print Queue PDF File",
+            "draft": False,
+            "prerelease": False
+        }
+        
+        # Create a new release
+        release_url = f"{GITHUB_API_URL}/repos/{GITHUB_REPO}/releases"
+        logger.info(f"Creating release at: {release_url}")
+        release_response = requests.post(release_url, json=release_data, headers=headers)
+        release_response.raise_for_status()
+        release_data = release_response.json()
+        
+        # Upload the PDF file
+        upload_url = release_data['upload_url'].split('{')[0]
+        logger.info(f"Uploading file to: {upload_url}")
+        
+        with open(file_path, 'rb') as f:
+            upload_headers = headers.copy()
+            upload_headers["Content-Type"] = "application/pdf"
+            upload_response = requests.post(
+                upload_url,
+                headers=upload_headers,
+                params={'name': filename},
+                data=f
+            )
+            upload_response.raise_for_status()
+            
+        return {
+            'url': upload_response.json()['browser_download_url'],
+            'id': release_data['id']
+        }
+        
+    except Exception as e:
+        logger.error(f"GitHub upload error: {str(e)}")
+        raise
+
+def download_from_github(url):
+    """Download file from public GitHub repository"""
+    try:
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/octet-stream"
+        }
+        
+        response = requests.get(
+            url,
+            headers=headers,
+            stream=True,
+            verify=True,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response
+    except Exception as e:
+        logger.error(f"GitHub download error: {str(e)}")
+        raise
+
+# Add to your delete_print_job function
+def delete_from_github(release_id):
+    try:
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        delete_url = f"{GITHUB_API_URL}/repos/{GITHUB_REPO}/releases/{release_id}"
+        response = requests.delete(delete_url, headers=headers)
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"Error deleting from GitHub: {str(e)}")
+        raise
+
+def generate_otp():
+    return str(random.randint(1000, 9999))
+
+def send_verification_email(user_name, user_email, otp):
+    html = render_template_string("""
+    <!DOCTYPE html>
     <html>
     <head>
-        <title>Privacy Policy</title>
+        <title>Verify Your Email - Print For You</title>
         <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; }
-            h1 { color: #4f46e5; }
-            h2 { color: #4f46e5; margin-top: 20px; }
-            .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            body {
+                font-family: Arial, sans-serif;
+                background-color: #f9fafb;
+                color: #333;
+                padding: 20px;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #fff;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            h2 {
+                color: #4f46e5;
+            }
+            .otp {
+                font-size: 24px;
+                font-weight: bold;
+                color: #4f46e5;
+                margin: 20px 0;
+            }
+            .button {
+                display: inline-block;
+                padding: 10px 20px;
+                background-color: #4f46e5;
+                color: #fff;
+                text-decoration: none;
+                border-radius: 4px;
+            }
+            .footer {
+                margin-top: 20px;
+                text-align: center;
+                font-size: 12px;
+                color: #777;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Privacy Policy</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 40px;
-            padding: 20px;
-            line-height: 1.6;
-            background-color: #f9f9f9;
-        }
-        .container {
-            max-width: 800px;
-            margin: auto;
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }
-        h1, h2 {
-            color: #333;
-        }
-        ul {
-            margin-top: 5px;
-        }
-    </style>
-</head>
-<body>
-
-    <div class="container">
-        <h1>Privacy Policy</h1>
-        <p>At <a href="https://flask-print-queue.onrender.com/" target="_blank">https://flask-print-queue.onrender.com/</a> ("Website"), we are committed to protecting your personal information and ensuring that your privacy is respected.</p>
-
-        <h2>1. Introduction</h2>
-        <p>This Privacy Policy explains how we collect, use, and protect your personal information when you visit our Website.</p>
-
-        <h2>2. Collection of Personal Information</h2>
-        <p>We may collect the following types of personal information:</p>
-        <ul>
-            <li>Name</li>
-            <li>Email address</li>
-            <li>IP address</li>
-            <li>Browser type and version</li>
-            <li>Operating system</li>
-            <li>Print request information (e.g., document contents, print settings)</li>
-        </ul>
-
-        <h2>3. Use of Personal Information</h2>
-        <p>We use your personal information for the following purposes:</p>
-        <ul>
-            <li>To process and fulfill print requests</li>
-            <li>To communicate with you</li>
-            <li>To analyze Website usage and performance</li>
-            <li>To improve our services</li>
-        </ul>
-
-        <h2>4. Protection of Personal Information</h2>
-        <p>We implement reasonable security measures to protect your personal information from unauthorized access, disclosure, or destruction.</p>
-
-        <h2>5. Sharing of Personal Information</h2>
-        <p>We may share your personal information with:</p>
-        <ul>
-            <li>Our affiliates and subsidiaries</li>
-            <li>Third-party service providers (e.g., print services)</li>
-            <li>Law enforcement agencies (if required by law)</li>
-        </ul>
-
-        <h2>6. Cookies and Tracking Technologies</h2>
-        <p>We use cookies and tracking technologies to collect information about your Website usage and preferences.</p>
-
-        <h2>7. Your Rights</h2>
-        <p>You have the right to:</p>
-        <ul>
-            <li>Access and correct your personal information</li>
-            <li>Opt-out of receiving marketing communications</li>
-            <li>Request deletion of your personal information</li>
-        </ul>
-
-        <h2>8. Data Retention</h2>
-        <p>We retain your personal information for as long as necessary to fulfill the purposes outlined in this Privacy Policy.</p>
-
-        <h2>9. Changes to this Privacy Policy</h2>
-        <p>We reserve the right to modify this Privacy Policy at any time, without notice.</p>
-
-        <h2>10. Contact Us</h2>
-        <p>If you have any questions or concerns, please contact us.</p>
-
-        <p>By using our Website, you acknowledge that you have read, understood, and agree to be bound by this Privacy Policy.</p>
-        
-        
-    </div>
-
-</body>
-</html>
-.]
+            <h2>Welcome, {{ user_name }} to <strong>Print For You</strong>!</h2>
+            <p>We're excited to have you here! You're just one step away from accessing our services.</p>
+            <p>To verify your email, please use the following OTP:</p>
+            <div class="otp">{{ otp }}</div>
+            <p>Alternatively, you can click the button below to verify your email:</p>
+            <a href="https://flask-print-queue.onrender.com/verify?otp={{ otp }}" class="button">Verify Email</a>
+            <p>If you did not request this, please ignore this email.</p>
+            <div class="footer">
+                <p>&copy; 2025 Print For You. All rights reserved.</p>
+            </div>
         </div>
     </body>
     </html>
-    """
-    return render_template_string(privacy_content)
+    """, user_name=user_name , otp=otp)
+
+    msg = Message(f"Verify Your Email - Print For You ({user_name})", recipients=[user_email])
+    msg.html = html
+    mail.send(msg)
+
+@app.route('/confirm/<token>')
+def confirm_email(token):
+    try:
+        email = serializer.loads(token, salt='email-confirmation-salt', max_age=3600)
+    except Exception as e:
+        return jsonify({'error': 'The confirmation link is invalid or has expired.'}), 400
+
+    user = users_collection.find_one({'email': email})
+    if user:
+        users_collection.update_one({'email': email}, {'$set': {'email_confirmed': True}})
+        return jsonify({'message': 'Email confirmed successfully!'}), 200
+    return jsonify({'error': 'User not found.'}), 404
+
+# Add this function to generate a password reset token
+def generate_password_reset_token(email):
+    return serializer.dumps(email, salt='password-reset-salt')
+
+# Add this function to verify the password reset token
+def verify_password_reset_token(token, expiration=3600):
+    try:
+        email = serializer.loads(token, salt='password-reset-salt', max_age=expiration)
+    except (SignatureExpired, BadSignature):
+        return None
+    return email
+
+# Add this function to send the password reset email
+def send_password_reset_email(email, token):
+    reset_url = url_for('reset_password', token=token, _external=True)
+    html = render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reset Your Password - Print For You</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background-color: #f9fafb;
+                color: #333;
+                padding: 20px;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #fff;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            h2 {
+                color: #4f46e5;
+            }
+            .button {
+                display: inline-block;
+                padding: 10px 20px;
+                background-color: #4f46e5;
+                color: #fff;
+                text-decoration: none;
+                border-radius: 4px;
+            }
+            .footer {
+                margin-top: 20px;
+                text-align: center;
+                font-size: 12px;
+                color: #777;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Reset Your Password</h2>
+            <p>To reset your password, click the button below:</p>
+            <a href="{{ reset_url }}" class="button">Reset Password</a>
+            <p>If you did not request this, please ignore this email.</p>
+            <div class="footer">
+                <p>&copy; 2025 Print For You. All rights reserved.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """, reset_url=reset_url)
+
+    msg = Message("Reset Your Password - Print For You", recipients=[email])
+    msg.html = html
+    mail.send(msg)
+
+# Add this route to handle the forgot password request
+@app.route('/forgot_password', methods=['POST'])
+def forgot_password():
+    data = request.get_json()
+    email = data.get('email')
+
+    if not email:
+        return jsonify({'error': 'Email is required'}), 400
+
+    user = users_collection.find_one({'email': email})
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    token = generate_password_reset_token(email)
+    send_password_reset_email(email, token)
+
+    return jsonify({'message': 'Password reset email sent'}), 200
+
+# Add this route to handle the password reset form
+@app.route('/reset_password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    email = verify_password_reset_token(token)
+
+    if not email:
+        return jsonify({'error': 'Invalid or expired token'}), 400
+
+    if request.method == 'POST':
+        data = request.get_json()
+        new_password = data.get('password')
+
+        if not new_password:
+            return jsonify({'error': 'Password is required'}), 400
+
+        hashed_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
+        users_collection.update_one({'email': email}, {'$set': {'password': hashed_password}})
+
+        return jsonify({'message': 'Password reset successful'}), 200
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reset Your Password - Print For You</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background-color: #f9fafb;
+                color: #333;
+                padding: 20px;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #fff;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            h2 {
+                color: #4f46e5;
+            }
+            .form-group {
+                margin-bottom: 1.5rem;
+            }
+            label {
+                display: block;
+                margin-bottom: 0.5rem;
+                font-weight: 500;
+                color: #333;
+            }
+            input {
+                width: 100%;
+                padding: 0.75rem;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                font-size: 1rem;
+                transition: border-color 0.2s;
+            }
+            input:focus {
+                outline: none;
+                border-color: #4f46e5;
+                box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+            }
+            button {
+                background-color: #4f46e5;
+                color: white;
+                border: none;
+                padding: 0.75rem 1.5rem;
+                border-radius: 8px;
+                font-size: 1rem;
+                cursor: pointer;
+                transition: background-color 0.2s, filter 0.2s;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                filter: brightness(1.1);
+            }
+            button:hover {
+                background-color: #4338ca;
+                filter: brightness(1.3);
+            }
+            .status {
+                padding: 1rem;
+                margin-top: 1rem;
+                border-radius: 8px;
+                font-weight: 500;
+            }
+            .success {
+                background-color: #ecfdf5;
+                color: #10b981;
+                border: 1px solid #a7f3d0;
+            }
+            .error {
+                background-color: #fef2f2;
+                color: #ef4444;
+                border: 1px solid #fecaca;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Reset Your Password</h2>
+            <form id="resetPasswordForm">
+                <div class="form-group">
+                    <label for="password">New Password</label>
+                    <input type="password" id="password" placeholder="Enter your new password" required>
+                </div>
+                <button type="submit">Reset Password</button>
+                <div id="status" class="status"></div>
+            </form>
+        </div>
+        <script>
+            document.getElementById('resetPasswordForm').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const password = document.getElementById('password').value;
+                const status = document.getElementById('status');
+
+                if (!password) {
+                    status.textContent = 'Password is required';
+                    status.className = 'status error';
+                    return;
+                }
+
+                try {
+                    const response = await fetch(window.location.pathname, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ password })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        status.textContent = data.message || 'Password reset successful';
+                        status.className = 'status success';
+                    } else {
+                        throw new Error(data.error || 'Password reset failed');
+                    }
+                } catch (error) {
+                    status.textContent = `Error: ${error.message}`;
+                    status.className = 'status error';
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """)
+
+@app.route('/admin/all-queues')
+def view_all_queues():
+    try:
+        if 'admin' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        batch1_queue = list(batch1_collection.find())
+        batch2_queue = list(batch2_collection.find())
+
+        # Convert ObjectId to string for JSON serialization
+        for queue in [batch1_queue, batch2_queue]:
+            for item in queue:
+                item['_id'] = str(item['_id'])
+
+        return jsonify({
+            'batch1': batch1_queue,
+            'batch2': batch2_queue
+        })
+
+    except Exception as e:
+        logger.error(f"View all queues error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+def generate_phonepe_payload(amount, user_email, transaction_id):
+    payload = {
+        "merchantId": PHONEPE_MERCHANT_ID,
+        "merchantTransactionId": transaction_id,
+        "merchantUserId": user_email,
+        "amount": int(amount * 100),  # Convert to paise
+        "redirectUrl": request.url_root + "payment/confirmation",  # Use dynamic URL based on host
+        "redirectMode": "POST",
+        "callbackUrl": request.url_root + "payment/callback",  # Use dynamic URL based on host
+        "mobileNumber": "",
+        "paymentInstrument": {
+            "type": "PAY_PAGE"
+        }
+    }
+    return payload
+
+def generate_phonepe_checksum(payload):
+    payload_str = json.dumps(payload, separators=(',', ':'))
+    encoded_payload = base64.b64encode(payload_str.encode()).decode()
+    
+    message = f"{encoded_payload}/pg/v1/pay{PHONEPE_SALT_KEY}"
+    sha256_hash = hashlib.sha256(message.encode()).hexdigest()
+    checksum = f"{sha256_hash}###{PHONEPE_SALT_INDEX}"
+    
+    return encoded_payload, checksum
+
+@app.route('/create_phonepe_order', methods=['POST'])
+def create_phonepe_order():
+    try:
+        if 'user' not in session:
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        data = request.get_json()
+        amount = data.get('amount')
+        
+        if not amount:
+            return jsonify({'error': 'Amount is required'}), 400
+            
+        try:
+            amount = float(amount)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            return jsonify({'error': 'Invalid amount'}), 400
+
+        # Generate unique transaction ID
+        transaction_id = str(uuid.uuid4())
+        
+        # Create payload
+        payload = generate_phonepe_payload(
+            amount, 
+            session['user']['email'],
+            transaction_id
+        )
+        
+        # Generate checksum
+        encoded_payload, checksum = generate_phonepe_checksum(payload)
+        
+        # Make request to PhonePe
+        headers = {
+            "Content-Type": "application/json",
+            "X-VERIFY": checksum
+        }
+        
+        response = requests.post(
+            f"{PHONEPE_API_URL}/pg/v1/pay",
+            json={
+                "request": encoded_payload
+            },
+            headers=headers
+        )
+        
+        response_data = response.json()
+        
+        if response_data.get('success'):
+            # Store transaction details
+            phonepe_payments_collection.insert_one({
+                'user_email': session['user']['email'],
+                'user_name': session['user']['name'],
+                'amount': amount,
+                'transaction_id': transaction_id,
+                'status': 'pending',
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+            
+            return jsonify({
+                'success': True,
+                'payment_url': response_data['data']['instrumentResponse']['redirectInfo']['url']
+            }), 200
+        else:
+            logger.error(f"PhonePe API error: {response_data}")
+            return jsonify({
+                'error': response_data.get('message', 'Payment initialization failed')
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"Create PhonePe order error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/payment/confirmation', methods=['POST'])
+def payment_confirmation():
+    try:
+        # Get the payment data from the request
+        data = request.form
+        
+        # Log the payment data
+        logger.info(f"Payment confirmation received: {data}")
+        
+        # Extract the transaction ID
+        transaction_id = data.get('merchantTransactionId')
+        
+        if not transaction_id:
+            logger.error("No transaction ID in payment confirmation")
+            return redirect(url_for('index'))
+        
+        # Find the payment in the database
+        payment = phonepe_payments_collection.find_one({'transaction_id': transaction_id})
+        
+        if not payment:
+            logger.error(f"Payment not found for transaction ID: {transaction_id}")
+            return redirect(url_for('index'))
+        
+        # Check if payment was successful
+        payment_status = data.get('code')
+        
+        if payment_status == 'PAYMENT_SUCCESS':
+            # Update payment status
+            phonepe_payments_collection.update_one(
+                {'transaction_id': transaction_id},
+                {'$set': {'status': 'completed'}}
+            )
+            
+            # Update user's pending dues
+            users_collection.update_one(
+                {'email': payment['user_email']},
+                {'$inc': {'pending_dues': -payment['amount']}}
+            )
+            
+            # Set a success message in the session
+            session['payment_message'] = f"Payment of ₹{payment['amount']} successful!"
+        else:
+            # Update payment status
+            phonepe_payments_collection.update_one(
+                {'transaction_id': transaction_id},
+                {'$set': {'status': 'failed'}}
+            )
+            
+            # Set a failure message in the session
+            session['payment_message'] = "Payment failed. Please try again."
+        
+        # Redirect to the home page
+        return redirect(url_for('index'))
+        
+    except Exception as e:
+        logger.error(f"Payment confirmation error: {str(e)}")
+        return redirect(url_for('index'))
+
+@app.route('/payment/callback', methods=['POST'])
+def phonepe_callback():
+    try:
+        data = request.get_json()
+        checksum = request.headers.get('X-VERIFY')
+
+        calculated_checksum = hashlib.sha256(
+            f"{json.dumps(data, separators=(',',':'))}{PHONEPE_SALT_KEY}".encode()
+        ).hexdigest() + f"###{PHONEPE_SALT_INDEX}"
+
+        if calculated_checksum != checksum:
+            logger.error("Invalid checksum in payment callback")
+            return jsonify({'error': 'Invalid checksum'}), 400
+
+        transaction_id = data['data']['merchantTransactionId']
+        payment = phonepe_payments_collection.find_one({'transaction_id': transaction_id})
+
+        if not payment:
+            logger.error(f"Payment not found for transaction ID: {transaction_id}")
+            return jsonify({'error': 'Payment not found'}), 404
+
+        if data['code'] == 'PAYMENT_SUCCESS':
+            phonepe_payments_collection.update_one(
+                {'transaction_id': transaction_id},
+                {'$set': {'status': 'completed'}}
+            )
+            users_collection.update_one(
+                {'email': payment['user_email']},
+                {'$inc': {'pending_dues': -payment['amount']}}
+            )
+            return jsonify({'message': 'Payment successful'}), 200
+        else:
+            phonepe_payments_collection.update_one(
+                {'transaction_id': transaction_id},
+                {'$set': {'status': 'failed'}}
+            )
+            return jsonify({'error': 'Payment failed'}), 400
+
+    except Exception as e:
+        logger.error(f"PhonePe callback error: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
