@@ -386,7 +386,8 @@ HTML_TEMPLATE = """
         </div>
         
         <div class="card">
-            <h2><i class="fas fa-file-upload"></i> For Students</h2>
+            <h2><i class="fas fa-file-upload"></i> pricing per page 2rs</h2>
+            <h2><i class="fas fa-file-upload"></i> if 100 pages 1.5 rs per page</h2>
             <div class="form-group">
                 <label for="studentName">Name</label>
                 <input type="text" id="studentName" placeholder="Enter your name" required>
@@ -1479,6 +1480,8 @@ def privacy():
         <p>If you have any questions or concerns, please contact us.</p>
 
         <p>By using our Website, you acknowledge that you have read, understood, and agree to be bound by this Privacy Policy.</p>
+        
+        
     </div>
 
 </body>
